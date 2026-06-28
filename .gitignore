@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Eval run artifacts (may contain account/ticket data)
+*-workspace/
