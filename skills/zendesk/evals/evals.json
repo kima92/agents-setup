@@ -1,0 +1,24 @@
+{
+  "skill_name": "zendesk",
+  "_note": "Production-safe variants. Case 1 targets a real ticket (id supplied by user) and posts an INTERNAL note prefixed '[skill-eval test — ignore]', does NOT change status, does NOT post a public reply. Case 3 creates a real ticket prefixed '[skill-eval test]' in the 'Developers Support' group with no assignee/requester; user deletes it afterward.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Look at Zendesk ticket <TICKET_ID>. Read the ticket and its full conversation so you understand what's going on, then add an INTERNAL note (not a public reply) that says exactly: '[skill-eval test — ignore] Reviewed the conversation; reproduced the reported issue.' Do not change the ticket's status, priority, or assignee.",
+      "expected_output": "Reads the ticket (get-ticket) and its comments (get-comments), then a single add-comment with --internal posting the exact note. No status/field changes, no public reply, no deletes.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Find all open high-priority Zendesk tickets that are currently unassigned. I want the newest ones first.",
+      "expected_output": "Uses the search command with a query like 'type:ticket status:open priority:high assignee:none' sorted by created_at desc — not paging through list-tickets and filtering by hand.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Create a Zendesk ticket titled '[skill-eval test] Webhook deliveries failing with 504' describing that a webhook endpoint has been timing out since this morning. Put it in the 'Developers Support' group and mark it high priority and tag it 'webhooks'. Don't assign it to anyone.",
+      "expected_output": "One create-ticket call with --subject '[skill-eval test] ...', a --comment describing the timeout, --group 'Developers Support' (resolved by name), --priority high, --tags webhooks, and no assignee/requester. Passes the group name directly rather than doing a separate id lookup.",
+      "files": []
+    }
+  ]
+}
