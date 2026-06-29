@@ -57,11 +57,11 @@ speaks up (with candidates) when it can't pick a single target.
 
 ## Available Commands
 
-The `scripts/zendesk_api.py` script provides a CLI for Zendesk Support
+The `.claude/skills/zendesk/scripts/zendesk_api.py` script provides a CLI for Zendesk Support
 operations. Execute it with Python 3:
 
 ```bash
-python3 scripts/zendesk_api.py <command> [options]
+python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 ```
 
 ### Ticket Commands
@@ -112,26 +112,26 @@ python3 scripts/zendesk_api.py <command> [options]
 
 ```bash
 # Most recently updated tickets first
-python3 scripts/zendesk_api.py list-tickets --sort-by updated_at --sort-order desc --per-page 25
+python3 .claude/skills/zendesk/scripts/zendesk_api.py list-tickets --sort-by updated_at --sort-order desc --per-page 25
 
 # Next page: Zendesk returns a full 'next' URL; pass it back as --cursor
-python3 scripts/zendesk_api.py list-tickets --cursor "https://acme.zendesk.com/api/v2/tickets.json?page=2"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py list-tickets --cursor "https://acme.zendesk.com/api/v2/tickets.json?page=2"
 
 # A single ticket and its full conversation
-python3 scripts/zendesk_api.py get-ticket --ticket-id 12345
-python3 scripts/zendesk_api.py get-comments --ticket-id 12345 --sort-order asc
+python3 .claude/skills/zendesk/scripts/zendesk_api.py get-ticket --ticket-id 12345
+python3 .claude/skills/zendesk/scripts/zendesk_api.py get-comments --ticket-id 12345 --sort-order asc
 ```
 
 ### Create a ticket
 
 ```bash
 # Minimal: subject + first comment
-python3 scripts/zendesk_api.py create-ticket \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py create-ticket \
   --subject "Login fails after password reset" \
   --comment "Customer reports a 500 right after resetting their password."
 
 # Triaged on creation, with requester resolved from an email and a group by name
-python3 scripts/zendesk_api.py create-ticket \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py create-ticket \
   --subject "Refund request" \
   --comment "Customer wants a refund for order #5512." \
   --requester "customer@example.com" \
@@ -140,7 +140,7 @@ python3 scripts/zendesk_api.py create-ticket \
   --priority high --type task --tags "refund,billing"
 
 # Long/multi-line comment from a file (use - for stdin)
-python3 scripts/zendesk_api.py create-ticket --subject "Outage report" --comment-file /tmp/report.md
+python3 .claude/skills/zendesk/scripts/zendesk_api.py create-ticket --subject "Outage report" --comment-file /tmp/report.md
 ```
 
 ### Reply to a customer or leave an internal note
@@ -150,15 +150,15 @@ Add `--internal` to leave a private note visible only to agents.
 
 ```bash
 # Public reply
-python3 scripts/zendesk_api.py add-comment --ticket-id 12345 \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py add-comment --ticket-id 12345 \
   --text "Thanks for the details — we've reproduced this and a fix is on the way."
 
 # Internal note (not visible to the requester)
-python3 scripts/zendesk_api.py add-comment --ticket-id 12345 \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py add-comment --ticket-id 12345 \
   --text "Root cause is the cache layer; looping in infra." --internal
 
 # Long reply from a file or stdin
-python3 scripts/zendesk_api.py add-comment --ticket-id 12345 --text-file /tmp/reply.md
+python3 .claude/skills/zendesk/scripts/zendesk_api.py add-comment --ticket-id 12345 --text-file /tmp/reply.md
 ```
 
 ### Update a ticket
@@ -169,15 +169,15 @@ pass `--internal`.
 
 ```bash
 # Solve a ticket with a closing public reply
-python3 scripts/zendesk_api.py update-ticket --ticket-id 12345 \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py update-ticket --ticket-id 12345 \
   --status solved --comment "Glad that worked — closing this out. Reopen anytime."
 
 # Reassign and reprioritize (assignee/group resolved from email/name)
-python3 scripts/zendesk_api.py update-ticket --ticket-id 12345 \
+python3 .claude/skills/zendesk/scripts/zendesk_api.py update-ticket --ticket-id 12345 \
   --assignee "jane@acme.io" --group "Tier 2" --priority urgent
 
 # Replace the ticket's tags
-python3 scripts/zendesk_api.py update-ticket --ticket-id 12345 --tags "vip,escalated"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py update-ticket --ticket-id 12345 --tags "vip,escalated"
 ```
 
 ### Search
@@ -188,16 +188,16 @@ Zendesk's search operators in `--query`.
 
 ```bash
 # Open, high-priority tickets
-python3 scripts/zendesk_api.py search --query "type:ticket status:open priority:high"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py search --query "type:ticket status:open priority:high"
 
 # Unassigned tickets in a group, newest first
-python3 scripts/zendesk_api.py search --query "type:ticket assignee:none group:Billing" --sort-by created_at --sort-order desc
+python3 .claude/skills/zendesk/scripts/zendesk_api.py search --query "type:ticket assignee:none group:Billing" --sort-by created_at --sort-order desc
 
 # Tickets a person requested, updated this month
-python3 scripts/zendesk_api.py search --query "type:ticket requester:customer@example.com updated>2026-06-01"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py search --query "type:ticket requester:customer@example.com updated>2026-06-01"
 
 # Find a user
-python3 scripts/zendesk_api.py search --query "type:user jane@acme.io"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py search --query "type:user jane@acme.io"
 ```
 
 Common operators: `type:ticket|user|organization`, `status:`, `priority:`,
@@ -209,20 +209,20 @@ unassigned tickets.
 
 ```bash
 # Look up a user (id, email, or name all work)
-python3 scripts/zendesk_api.py get-user --user "jane@acme.io"
-python3 scripts/zendesk_api.py search-users --query "name:Jane"
-python3 scripts/zendesk_api.py list-users --role agent --per-page 100
+python3 .claude/skills/zendesk/scripts/zendesk_api.py get-user --user "jane@acme.io"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py search-users --query "name:Jane"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py list-users --role agent --per-page 100
 
 # Create / update users
-python3 scripts/zendesk_api.py create-user --name "Sam Lee" --email "sam@example.com" --role end-user --organization "Acme Corp"
-python3 scripts/zendesk_api.py update-user --user "sam@example.com" --phone "+1-555-0100" --notes "VIP"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py create-user --name "Sam Lee" --email "sam@example.com" --role end-user --organization "Acme Corp"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py update-user --user "sam@example.com" --phone "+1-555-0100" --notes "VIP"
 
 # Organizations and groups
-python3 scripts/zendesk_api.py list-organizations --per-page 50
-python3 scripts/zendesk_api.py get-organization --organization "Acme Corp"
-python3 scripts/zendesk_api.py create-organization --name "Globex" --domain-names "globex.com,globex.io"
-python3 scripts/zendesk_api.py list-groups
-python3 scripts/zendesk_api.py get-group --group "Billing"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py list-organizations --per-page 50
+python3 .claude/skills/zendesk/scripts/zendesk_api.py get-organization --organization "Acme Corp"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py create-organization --name "Globex" --domain-names "globex.com,globex.io"
+python3 .claude/skills/zendesk/scripts/zendesk_api.py list-groups
+python3 .claude/skills/zendesk/scripts/zendesk_api.py get-group --group "Billing"
 ```
 
 ## Workflow Guidelines
