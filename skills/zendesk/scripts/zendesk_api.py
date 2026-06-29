@@ -299,6 +299,29 @@ class ZendeskClient:
         params = {"sort_order": sort_order, "per_page": per_page}
         return self._get("/tickets/{}/comments.json".format(ticket_id), params)
 
+    def get_all_ticket_comments(self, ticket_id, sort_order=None):
+        """Fetch every comment of a ticket, following pagination."""
+        comments = []
+        data = self.get_ticket_comments(ticket_id, sort_order=sort_order, per_page=100)
+        comments.extend(data.get("comments", []))
+        nxt = data.get("next_page")
+        while nxt:
+            data = self._get(nxt)
+            comments.extend(data.get("comments", []))
+            nxt = data.get("next_page")
+        return comments
+
+    def get_users_many(self, ids):
+        """Resolve a set of user ids to user objects in as few calls as possible."""
+        unique = [str(i) for i in dict.fromkeys(i for i in ids if i)]
+        out = {}
+        for i in range(0, len(unique), 100):
+            chunk = unique[i:i + 100]
+            data = self._get("/users/show_many.json", {"ids": ",".join(chunk)})
+            for u in data.get("users", []):
+                out[u.get("id")] = u
+        return out
+
     def create_ticket(self, subject, comment_body, comment_public=True,
                       requester=None, priority=None, ticket_type=None,
                       assignee=None, group=None, tags=None, status=None):
@@ -467,6 +490,138 @@ def output_json(data):
     sys.stdout.write("\n")
 
 
+# --- compact ticket view ---
+
+def _clean_body(text):
+    """Collapse a comment body to compact plain text (drop blank/whitespace lines)."""
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _user_label(users, uid):
+    """Human label for a user id using a prefetched id->user map."""
+    if not uid:
+        return "(system)"
+    u = users.get(uid)
+    if not u:
+        return "user#{}".format(uid)
+    name = (u.get("name") or "").strip()
+    email = (u.get("email") or "").strip()
+    if name and email:
+        return "{} <{}>".format(name, email)
+    return name or email or "user#{}".format(uid)
+
+
+def build_compact_ticket(client, ticket_id, sort_order="asc", max_comments=None,
+                         public_only=False):
+    """Return a trimmed dict for a ticket and its comments.
+
+    Bundles the ticket and its full comment thread, resolves the author/
+    requester/assignee/org/group ids to human labels, and drops the noisy
+    fields (custom_fields, html_body, raw_subject, etc.) that bloat the raw API
+    responses.
+    """
+    ticket = client.get_ticket(ticket_id).get("ticket", {})
+    comments = client.get_all_ticket_comments(ticket_id, sort_order=sort_order)
+    if public_only:
+        comments = [c for c in comments if c.get("public")]
+
+    omitted = 0
+    if max_comments is not None and len(comments) > max_comments:
+        omitted = len(comments) - max_comments
+        # Keep the most recent ones regardless of sort direction.
+        comments = comments[-max_comments:] if sort_order != "desc" else comments[:max_comments]
+
+    user_ids = [c.get("author_id") for c in comments]
+    user_ids += [ticket.get("requester_id"), ticket.get("assignee_id"),
+                 ticket.get("submitter_id")]
+    users = client.get_users_many(user_ids)
+
+    def _org_label(oid):
+        if not oid:
+            return None
+        try:
+            return client.get_organization(oid).get("organization", {}).get("name")
+        except ApiError:
+            return "org#{}".format(oid)
+
+    def _group_label(gid):
+        if not gid:
+            return None
+        try:
+            return client.get_group(gid).get("group", {}).get("name")
+        except ApiError:
+            return "group#{}".format(gid)
+
+    compact_comments = []
+    for c in comments:
+        entry = {
+            "author": _user_label(users, c.get("author_id")),
+            "created_at": c.get("created_at"),
+            "public": bool(c.get("public")),
+            "body": _clean_body(c.get("plain_body") or c.get("body") or ""),
+        }
+        atts = [a.get("file_name") for a in (c.get("attachments") or []) if a.get("file_name")]
+        if atts:
+            entry["attachments"] = atts
+        compact_comments.append(entry)
+
+    return {
+        "id": ticket.get("id"),
+        "subject": ticket.get("subject"),
+        "status": ticket.get("status"),
+        "priority": ticket.get("priority"),
+        "type": ticket.get("type"),
+        "channel": (ticket.get("via") or {}).get("channel"),
+        "created_at": ticket.get("created_at"),
+        "updated_at": ticket.get("updated_at"),
+        "requester": _user_label(users, ticket.get("requester_id")),
+        "assignee": _user_label(users, ticket.get("assignee_id")) if ticket.get("assignee_id") else None,
+        "organization": _org_label(ticket.get("organization_id")),
+        "group": _group_label(ticket.get("group_id")),
+        "tags": ticket.get("tags") or [],
+        "comments_omitted": omitted,
+        "comments": compact_comments,
+    }
+
+
+def render_compact_ticket(t):
+    """Render the compact dict from build_compact_ticket as plain text."""
+    lines = []
+    lines.append("Ticket #{} — {}".format(t.get("id"), t.get("subject") or "(no subject)"))
+    meta = "Status: {} | Priority: {} | Type: {} | Channel: {}".format(
+        t.get("status"), t.get("priority"), t.get("type"), t.get("channel"))
+    lines.append(meta)
+    lines.append("Created: {} | Updated: {}".format(t.get("created_at"), t.get("updated_at")))
+    lines.append("Requester: {}".format(t.get("requester")))
+    lines.append("Assignee: {}".format(t.get("assignee") or "(unassigned)"))
+    if t.get("organization"):
+        lines.append("Organization: {}".format(t.get("organization")))
+    if t.get("group"):
+        lines.append("Group: {}".format(t.get("group")))
+    if t.get("tags"):
+        lines.append("Tags: {}".format(", ".join(t["tags"])))
+
+    comments = t.get("comments", [])
+    header = "--- Comments ({}) ---".format(len(comments))
+    if t.get("comments_omitted"):
+        header = "--- Comments ({} shown, {} older omitted) ---".format(
+            len(comments), t["comments_omitted"])
+    lines.append("")
+    lines.append(header)
+    for i, c in enumerate(comments, 1):
+        vis = "public" if c.get("public") else "internal"
+        lines.append("")
+        lines.append("[{}] {} · {} · {}".format(i, c.get("author"), c.get("created_at"), vis))
+        if c.get("attachments"):
+            lines.append("attachments: {}".format(", ".join(c["attachments"])))
+        if c.get("body"):
+            lines.append(c["body"])
+    return "\n".join(lines)
+
+
 def resolve_text(direct, from_file):
     """Return text from --x or --x-file (use '-' for stdin)."""
     if from_file is not None:
@@ -507,6 +662,17 @@ def build_parser():
     p.add_argument("--ticket-id", required=True)
     p.add_argument("--sort-order", choices=["asc", "desc"])
     p.add_argument("--per-page", type=int)
+
+    p = sub.add_parser("compact-ticket",
+                       help="Token-efficient plain-text view of a ticket and its comments")
+    p.add_argument("--ticket-id", required=True)
+    p.add_argument("--sort-order", choices=["asc", "desc"], default="asc")
+    p.add_argument("--max-comments", type=int,
+                   help="Cap the number of comments shown (keeps the most recent)")
+    p.add_argument("--public-only", action="store_true",
+                   help="Exclude internal notes; show only public comments")
+    p.add_argument("--format", choices=["text", "json"], default="text",
+                   help="Output as plain text (default) or trimmed JSON")
 
     p = sub.add_parser("create-ticket", help="Create a new ticket")
     p.add_argument("--subject", required=True)
@@ -616,6 +782,14 @@ def dispatch(client, args):
     if cmd == "get-comments":
         return client.get_ticket_comments(args.ticket_id, args.sort_order, args.per_page)
 
+    if cmd == "compact-ticket":
+        compact = build_compact_ticket(
+            client, args.ticket_id, sort_order=args.sort_order,
+            max_comments=args.max_comments, public_only=args.public_only)
+        if args.format == "json":
+            return compact
+        return render_compact_ticket(compact)
+
     if cmd == "create-ticket":
         body = resolve_text(args.comment, args.comment_file)
         if not body:
@@ -678,7 +852,10 @@ def main():
     try:
         client = ZendeskClient()
         result = dispatch(client, args)
-        output_json(result)
+        if isinstance(result, str):
+            sys.stdout.write(result + "\n")
+        else:
+            output_json(result)
     except ConfigurationError as e:
         sys.stderr.write("Configuration Error: {}\n".format(e))
         sys.exit(2)

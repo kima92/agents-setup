@@ -69,8 +69,9 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 | Command | Description |
 |---------|-------------|
 | `list-tickets` | List tickets (sortable, paginated) |
-| `get-ticket` | Get a single ticket by id |
-| `get-comments` | Get a ticket's conversation (all comments) |
+| `get-ticket` | Get a single ticket by id (full raw JSON) |
+| `get-comments` | Get a ticket's conversation (all comments, full raw JSON) |
+| `compact-ticket` | Token-efficient plain-text view of a ticket **and** its comments in one call |
 | `create-ticket` | Create a new ticket with a first comment |
 | `update-ticket` | Update fields (status/priority/assignee/group/tags/subject) and/or add a comment |
 | `add-comment` | Add a public reply or internal note to a ticket |
@@ -121,6 +122,30 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py list-tickets --cursor "htt
 python3 .claude/skills/zendesk/scripts/zendesk_api.py get-ticket --ticket-id 12345
 python3 .claude/skills/zendesk/scripts/zendesk_api.py get-comments --ticket-id 12345 --sort-order asc
 ```
+
+### Read a ticket compactly (preferred for triage)
+
+`get-ticket` and `get-comments` return the full raw API payloads, which carry a
+lot of redundant noise (every `custom_fields` entry, `html_body`, `fields`,
+numeric author/requester ids, etc.). When you just need to **understand and act
+on** a ticket, prefer `compact-ticket`: it fetches the ticket *and* its whole
+comment thread in one command, resolves author/requester/assignee/org/group ids
+to human names, drops the noisy fields, and prints clean plain text.
+
+```bash
+# Plain-text ticket + conversation (default) — best for reading
+python3 .claude/skills/zendesk/scripts/zendesk_api.py compact-ticket --ticket-id 12345
+
+# Only the most recent 5 comments, public replies only
+python3 .claude/skills/zendesk/scripts/zendesk_api.py compact-ticket --ticket-id 12345 --max-comments 5 --public-only
+
+# Trimmed structured JSON instead of text (still drops the noise)
+python3 .claude/skills/zendesk/scripts/zendesk_api.py compact-ticket --ticket-id 12345 --format json
+```
+
+Options: `--sort-order asc|desc` (default `asc`, oldest first), `--max-comments N`
+(keeps the most recent N and notes how many were omitted), `--public-only`
+(hide internal notes), and `--format text|json`.
 
 ### Create a ticket
 
@@ -229,8 +254,10 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py get-group --group "Billing
 
 ### Triaging and replying to a ticket
 
-1. `get-ticket` to understand the request, then `get-comments` to read the
-   full conversation so your reply has context.
+1. `compact-ticket` to read the request and the full conversation in one
+   token-efficient call (resolved names, no field noise). Fall back to
+   `get-ticket` / `get-comments` only when you need the raw fields (e.g. a
+   specific custom field value or attachment URLs).
 2. Reply with `add-comment` (public) or leave an `--internal` note for
    teammates. Keep replies in the customer's voice; reserve `--internal` for
    things the customer shouldn't see.
