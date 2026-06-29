@@ -69,9 +69,9 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 | Command | Description |
 |---------|-------------|
 | `list-tickets` | List tickets (sortable, paginated) |
+| `compact-ticket` | Token-efficient plain-text view of a ticket **and** its comments in one call |
 | `get-ticket` | Get a single ticket by id (full raw JSON) |
 | `get-comments` | Get a ticket's conversation (all comments, full raw JSON) |
-| `compact-ticket` | Token-efficient plain-text view of a ticket **and** its comments in one call |
 | `create-ticket` | Create a new ticket with a first comment |
 | `update-ticket` | Update fields (status/priority/assignee/group/tags/subject) and/or add a comment |
 | `add-comment` | Add a public reply or internal note to a ticket |
