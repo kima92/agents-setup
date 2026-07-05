@@ -9,6 +9,12 @@ Modelled on the sibling `slack` and `bitbucket` skills: env-var auth, a
 `curl`-with-`urllib`-fallback transport, JSON on stdout, errors on stderr, no
 third-party dependencies.
 
+## Install
+
+```bash
+npx skills add https://github.com/kima92/agents-setup --skill testrail
+```
+
 ## Setup
 
 ```bash

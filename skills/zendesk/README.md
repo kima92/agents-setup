@@ -8,6 +8,12 @@ internal notes, and looking up users, organizations, and agent groups.
 It is **non-destructive**: it never deletes tickets, users, organizations, or
 groups.
 
+## Install
+
+```bash
+npx skills add https://github.com/kima92/agents-setup --skill zendesk
+```
+
 ## Setup
 
 Set three environment variables:
