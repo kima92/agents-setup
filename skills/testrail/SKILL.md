@@ -1,6 +1,6 @@
 ---
 name: testrail
-description: Interact with TestRail (test-management) through its REST API v2 as a self-contained Python CLI. Use whenever the user wants to read or manage TestRail projects, suites, sections, test cases, runs, tests, results, plans, or milestones — listing/creating/updating cases, opening or closing runs, recording pass/fail results, or looking up case/run/project IDs. Critically, use this to REPORT PLAYWRIGHT (e2e) TEST RESULTS to TestRail: the `report-playwright` command ingests a Playwright JSON report and pushes results into a run, mapping specs to cases by their `C1234` markers. Trigger on any mention of TestRail, "test case management", "test run", "report results to TestRail", "sync e2e results", "create a TestRail run", or a TestRail case/run reference (e.g. C1234, R567) — even when the API isn't named explicitly. Pairs naturally with the `arial-test` Playwright e2e skill.
+description: Interact with TestRail (test-management) through its REST API v2 as a self-contained Python CLI. Use whenever the user wants to read or manage TestRail projects, suites, sections, test cases, runs, tests, results, plans, or milestones — listing/creating/updating cases, opening or closing runs, recording pass/fail results, or looking up case/run/project IDs. Two headline workflows: (1) READ A WHOLE RUN in one shot — the `read-run` command takes any run URL (e.g. .../index.php?/runs/activity/974) or run ID and returns/saves every test with preconditions, steps, expected results and the full result history (statuses, comments, defects); (2) REPORT PLAYWRIGHT (e2e) TEST RESULTS — the `report-playwright` command ingests a Playwright JSON report and pushes results into a run, mapping specs to cases by their `C1234` markers. Trigger on any mention of TestRail, a pasted TestRail URL, "test case management", "test run", "report results to TestRail", "sync e2e results", "create a TestRail run", or a TestRail case/run reference (e.g. C1234, R567) — even when the API isn't named explicitly. Pairs naturally with the `arial-test` Playwright e2e skill.
 ---
 
 # TestRail
@@ -117,7 +117,42 @@ python3 .claude/skills/testrail/scripts/testrail_api.py <command> [options]
 
 | Command | Description |
 |---------|-------------|
+| `read-run` | Read a whole run (by ID **or URL**) in one shot — tests, steps, expected results, full result history — optionally saved as markdown files |
 | `report-playwright` | Parse a Playwright JSON report and push results to a run (creating the run if needed) |
+
+## Reading a whole run — `read-run`
+
+When the user pastes a TestRail run URL (any variant — `/runs/view/974`,
+`/runs/activity/974`) or asks "what happened in run X", do **not** hand-chain
+`get-run` + `list-statuses` + `list-tests` + `get-results` per test. One command
+does it all — it resolves status/priority/user IDs to labels, converts
+TestRail's rich-text HTML to plain text, and attaches each test's chronological
+result history (comments, defects, elapsed, step actuals):
+
+```bash
+S=.claude/skills/testrail/scripts/testrail_api.py
+
+# Print the whole run as structured JSON (URL or plain run ID both work)
+python3 $S read-run --run "https://pmtm.testrail.io/index.php?/runs/activity/974"
+python3 $S read-run --run 974
+
+# Save it as browsable markdown — one file per test case + summary + raw JSON
+python3 $S read-run --run 974 --out testcases/run-974
+```
+
+With `--out DIR` it writes:
+
+- `_run.md` — run summary: name/refs/description, status counts, and a table of
+  every test linking to its case file
+- `C<case_id>-<slug>.md` per test — preconditions, numbered steps with expected
+  results, final expected result, and the **Results & Comments** history
+  (oldest → newest, so status flips like Passed→Failed are visible)
+- `run.json` — the same assembled data as machine-readable JSON
+
+and prints a short JSON summary (run id/name/url, status counts, file count).
+Notes: user names require list-users permission — read-only API accounts fall
+back to `user <id>`; JSON output for a big run is large, so prefer `--out` and
+read `_run.md` first, then only the interesting case files.
 
 ## Reporting Playwright e2e results — the headline workflow
 
@@ -214,7 +249,8 @@ python3 $S add-result-for-case --run-id 678 --case-id 1235 --status failed --com
 python3 $S add-result-for-case --run-id 678 --case-id 1236 --status passed --elapsed "3s"
 python3 $S close-run --run-id 678
 
-# Read everything that happened in a run
+# Read everything that happened in a run (prefer read-run; raw results if needed)
+python3 $S read-run --run 678 --out testcases/run-678
 python3 $S get-results-for-run --run-id 678
 ```
 
@@ -222,6 +258,12 @@ python3 $S get-results-for-run --run-id 678
 takes a raw number if you use custom statuses.
 
 ## Workflow guidelines
+
+### Reading a run someone shared (URL or ID)
+
+One step: `read-run --run <url-or-id> --out testcases/run-<id>`, then read
+`_run.md` for the overview and open the case files for failures. No need to
+resolve statuses or fetch results per test — it's all inlined.
 
 ### Reporting an automated test run (the usual path)
 

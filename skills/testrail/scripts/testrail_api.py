@@ -28,6 +28,8 @@ the `?` already sits before `/api/v2`, extra query parameters are appended with
 
 import argparse
 import base64
+import datetime
+import html as html_lib
 import json
 import os
 import re
@@ -445,6 +447,59 @@ def output_json(data):
 
 CASE_ID_RE = re.compile(r"\bC(\d+)\b")
 
+# Matches any TestRail run URL variant: /runs/view/974, /runs/activity/974, ...
+RUN_REF_RE = re.compile(r"/runs/(?:view|activity|overview|edit)/(\d+)")
+
+
+def parse_run_ref(value):
+    """Resolve a run reference: a bare numeric ID or any TestRail run URL."""
+    value = str(value).strip()
+    if value.isdigit():
+        return int(value)
+    match = RUN_REF_RE.search(value)
+    if match:
+        return int(match.group(1))
+    raise ValueError(
+        "Cannot parse run reference {!r}; pass a run ID or a TestRail run URL "
+        "(e.g. .../index.php?/runs/activity/974)".format(value)
+    )
+
+
+def html_to_text(html_str):
+    """Convert TestRail's rich-text HTML fields to readable plain text/markdown.
+
+    Good enough for <p>/<br>/<li>/<font>-style markup TestRail produces; keeps
+    list items as `- ` bullets and collapses runs of blank lines.
+    """
+    if not html_str:
+        return ""
+    text = str(html_str)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)<li[^>]*>", "\n- ", text)
+    text = re.sub(r"(?i)</(?:p|div|ul|ol|li|tr|h[1-6])>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_lib.unescape(text).replace("\u00a0", " ")
+    lines = [line.strip() for line in text.split("\n")]
+    out = []
+    for line in lines:
+        if line or (out and out[-1]):
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def slugify(text, max_len=60):
+    """Make a filesystem-friendly slug from a case title."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug[:max_len].rstrip("-") or "case"
+
+
+def fmt_ts(ts):
+    """Format a TestRail unix timestamp as a readable UTC string."""
+    if not ts:
+        return None
+    dt = datetime.datetime.fromtimestamp(int(ts), datetime.timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
 
 def parse_case_ids(*texts):
     """Extract TestRail case IDs (e.g. C1234) from any of the given strings.
@@ -506,6 +561,226 @@ def parse_steps(steps_json):
         else:
             raise ValueError("each step must be a string or {content, expected} object")
     return steps
+
+
+# --- Run dump (read-run) ------------------------------------------------------
+
+def _md_indent(text, pad="     "):
+    """Keep multi-line text inside a markdown list item by indenting continuations."""
+    return text.replace("\n", "\n" + pad) if text else ""
+
+
+def build_run_dump(client, run_id, limit=None):
+    """Fetch a run with its tests, step definitions and full result history.
+
+    One call does what previously took list-statuses + get-run + list-tests +
+    get-results per test: statuses/priorities/users are resolved to labels,
+    HTML fields are converted to text, and every test carries its chronological
+    result history (comments, defects, step actuals).
+    """
+    run = client.get_run(run_id)
+    statuses = {s["id"]: s["label"] for s in client.get_statuses()}
+    try:
+        priorities = {p["id"]: p.get("name") for p in client.get_priorities()}
+    except ApiError:
+        priorities = dict(PRIORITY)
+
+    users = {}
+    try:  # read-only accounts may be denied the users endpoint; degrade to IDs
+        for u in client.get_users(run.get("project_id")):
+            users[u["id"]] = u.get("name") or u.get("email")
+    except ApiError:
+        pass
+
+    def user_name(uid):
+        return users.get(uid) or ("user {}".format(uid) if uid else None)
+
+    tests = client.get_tests(run_id, limit)
+    results_by_test = {}
+    for r in client.get_results_for_run(run_id):
+        results_by_test.setdefault(r.get("test_id"), []).append(r)
+    for history in results_by_test.values():
+        history.sort(key=lambda r: (r.get("created_on") or 0, r.get("id") or 0))
+
+    dump_tests = []
+    for t in tests:
+        steps = []
+        for s in t.get("custom_steps_separated") or []:
+            step = {
+                "content": html_to_text(s.get("content")),
+                "expected": html_to_text(s.get("expected")),
+            }
+            info = html_to_text(s.get("additional_info"))
+            if info:
+                step["additional_info"] = info
+            steps.append(step)
+
+        history = []
+        for r in results_by_test.get(t["id"], []):
+            step_results = []
+            for idx, sr in enumerate(r.get("custom_step_results") or [], 1):
+                actual = html_to_text(sr.get("actual"))
+                raw_status = str(sr.get("status_id") or "")
+                sr_status = int(raw_status) if raw_status.isdigit() else None
+                # Untested step rows with no actuals are noise, skip them.
+                if actual or (sr_status and sr_status != STATUS["untested"]):
+                    step_results.append({
+                        "step": idx,
+                        "status": statuses.get(sr_status, sr_status),
+                        "actual": actual or None,
+                    })
+            history.append({
+                "status": statuses.get(r.get("status_id"), r.get("status_id")),
+                "created_on": fmt_ts(r.get("created_on")),
+                "by": user_name(r.get("created_by")),
+                "comment": html_to_text(r.get("comment")) or None,
+                "defects": r.get("defects"),
+                "elapsed": r.get("elapsed"),
+                "version": r.get("version"),
+                "attachments": len(r.get("attachment_ids") or []) or None,
+                "step_results": step_results or None,
+            })
+
+        dump_tests.append({
+            "test_id": t["id"],
+            "case_id": t["case_id"],
+            "title": t.get("title"),
+            "status": statuses.get(t.get("status_id"), t.get("status_id")),
+            "priority": priorities.get(t.get("priority_id")),
+            "refs": t.get("refs"),
+            "preconditions": html_to_text(t.get("custom_preconds")) or None,
+            "steps": steps,
+            "final_expected": html_to_text(t.get("custom_expected")) or None,
+            "results": history,
+            "file": "C{}-{}.md".format(t["case_id"], slugify(t.get("title"))),
+        })
+
+    status_counts = {}
+    for t in dump_tests:
+        key = str(t["status"])
+        status_counts[key] = status_counts.get(key, 0) + 1
+
+    return {
+        "run": {
+            "id": run["id"],
+            "name": run.get("name"),
+            "url": run.get("url"),
+            "description": run.get("description"),
+            "project_id": run.get("project_id"),
+            "suite_id": run.get("suite_id"),
+            "refs": run.get("refs"),
+            "is_completed": run.get("is_completed"),
+            "created_on": fmt_ts(run.get("created_on")),
+            "created_by": user_name(run.get("created_by")),
+        },
+        "status_counts": status_counts,
+        "tests": dump_tests,
+    }
+
+
+def render_case_md(run, t):
+    """Render one test case (definition + result history) as markdown."""
+    lines = ["# C{} — {}".format(t["case_id"], t["title"]), ""]
+    lines.append("- **Run:** [{}]({}) (R{})".format(run["name"], run["url"], run["id"]))
+    lines.append("- **Final status:** {}".format(t["status"]))
+    if t.get("priority"):
+        lines.append("- **Priority:** {}".format(t["priority"]))
+    if t.get("refs"):
+        lines.append("- **Refs:** {}".format(t["refs"]))
+    lines.append("- **Test ID:** {}".format(t["test_id"]))
+    lines.append("")
+
+    if t.get("preconditions"):
+        lines += ["## Preconditions", "", t["preconditions"], ""]
+
+    if t.get("steps"):
+        lines += ["## Steps", ""]
+        for idx, s in enumerate(t["steps"], 1):
+            lines.append("{}. {}".format(idx, _md_indent(s["content"] or "(no content)", "   ")))
+            if s.get("expected"):
+                lines.append("   - **Expected:** {}".format(_md_indent(s["expected"])))
+            if s.get("additional_info"):
+                lines.append("   - _Info:_ {}".format(_md_indent(s["additional_info"])))
+        lines.append("")
+
+    if t.get("final_expected"):
+        lines += ["## Final Expected Result", "", t["final_expected"], ""]
+
+    lines += ["## Results & Comments", ""]
+    if not t["results"]:
+        lines.append("_No results recorded._")
+    for r in t["results"]:
+        by = " (by {})".format(r["by"]) if r.get("by") else ""
+        lines.append("### {} — {}{}".format(r.get("created_on") or "?", r["status"], by))
+        for label, value in (("Elapsed", r.get("elapsed")), ("Version", r.get("version")),
+                             ("Defects", r.get("defects")), ("Attachments", r.get("attachments"))):
+            if value:
+                lines.append("- **{}:** {}".format(label, value))
+        if r.get("comment"):
+            lines.append("")
+            lines += ["> " + line for line in r["comment"].split("\n")]
+        if r.get("step_results"):
+            lines += ["", "Step results:"]
+            for sr in r["step_results"]:
+                detail = " — {}".format(sr["actual"]) if sr.get("actual") else ""
+                lines.append("- Step {}: {}{}".format(sr["step"], sr.get("status") or "?", detail))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_run_md(dump):
+    """Render the run summary (_run.md) as markdown."""
+    run = dump["run"]
+    lines = ["# R{} — {}".format(run["id"], run["name"]), ""]
+    lines.append("- **URL:** {}".format(run["url"]))
+    if run.get("refs"):
+        lines.append("- **Refs:** {}".format(run["refs"]))
+    created_by = " by {}".format(run["created_by"]) if run.get("created_by") else ""
+    lines.append("- **Created:** {}{}".format(run.get("created_on") or "?", created_by))
+    lines.append("- **Completed:** {}".format("yes" if run.get("is_completed") else "no"))
+    if run.get("description"):
+        lines += ["", "```", run["description"], "```"]
+    lines += ["", "## Status summary", ""]
+    for status, count in sorted(dump["status_counts"].items(), key=lambda kv: -kv[1]):
+        lines.append("- {}: {}".format(status, count))
+    lines += ["", "## Tests", "",
+              "| Case | Title | Status | Results | File |",
+              "|------|-------|--------|---------|------|"]
+    for t in dump["tests"]:
+        title = (t["title"] or "").replace("|", "\\|")
+        lines.append("| C{} | {} | {} | {} | [{}]({}) |".format(
+            t["case_id"], title, t["status"], len(t["results"]), t["file"], t["file"]))
+    return "\n".join(lines) + "\n"
+
+
+def cmd_read_run(client, args):
+    """Read a full run (by ID or URL); print JSON or save markdown files."""
+    run_id = parse_run_ref(args.run)
+    dump = build_run_dump(client, run_id, args.limit)
+
+    if not args.out:
+        output_json(dump)
+        return
+
+    os.makedirs(args.out, exist_ok=True)
+    with open(os.path.join(args.out, "run.json"), "w", encoding="utf-8") as f:
+        json.dump(dump, f, indent=2, default=str)
+    for t in dump["tests"]:
+        with open(os.path.join(args.out, t["file"]), "w", encoding="utf-8") as f:
+            f.write(render_case_md(dump["run"], t))
+    with open(os.path.join(args.out, "_run.md"), "w", encoding="utf-8") as f:
+        f.write(render_run_md(dump))
+
+    output_json({
+        "status": "saved",
+        "run_id": dump["run"]["id"],
+        "run_name": dump["run"]["name"],
+        "run_url": dump["run"]["url"],
+        "out_dir": os.path.abspath(args.out),
+        "tests": len(dump["tests"]),
+        "status_counts": dump["status_counts"],
+        "files": len(dump["tests"]) + 2,  # cases + _run.md + run.json
+    })
 
 
 # --- Playwright report parsing ----------------------------------------------
@@ -938,6 +1213,17 @@ def build_parser():
     p.add_argument("--email", "-e", required=True)
 
     # --- workflows ---
+    p = sub.add_parser("read-run",
+                       help="Read a whole run (by ID or URL) in one shot: tests, "
+                            "preconditions, steps, expected results and full result "
+                            "history; optionally save as markdown files")
+    p.add_argument("--run", "-r", required=True,
+                   help="Run ID or any TestRail run URL (/runs/view/974, /runs/activity/974)")
+    p.add_argument("--out", "-o", default=None,
+                   help="Directory to save one .md per case + _run.md summary + run.json "
+                        "(default: print JSON to stdout)")
+    p.add_argument("--limit", "-l", type=int, default=None, help="Max tests to read")
+
     p = sub.add_parser("report-playwright",
                        help="Parse a Playwright JSON report and push results to a run")
     p.add_argument("--report", "-R", required=True, help="Path to Playwright JSON report")
@@ -1190,6 +1476,8 @@ def dispatch(client, args):
     if cmd == "get-user-by-email":
         return output_json(client.get_user_by_email(args.email))
 
+    if cmd == "read-run":
+        return cmd_read_run(client, args)
     if cmd == "report-playwright":
         return cmd_report_playwright(client, args)
 
