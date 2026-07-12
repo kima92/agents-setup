@@ -77,6 +77,9 @@ python3 hevy.py workout get <workout_id> --json
 python3 hevy.py export                  # dump ALL workouts -> hevy_workouts_YYYYMMDD.json
 python3 hevy.py export --out mine.json
 
+python3 hevy.py routine list             # all routines: title, folder, id
+python3 hevy.py routine list --json      # raw JSON (full nested exercises/sets)
+
 python3 hevy.py routine get <routine_id> > r.json   # fetch a routine
 # edit r.json (title, exercises[].sets[].reps / weight_kg, rest_seconds, notes ...)
 python3 hevy.py routine update <routine_id> --file r.json
@@ -124,6 +127,8 @@ Endpoints:
 | `GET` | `/workout/{id}` | single workout (full object, unwrapped) |
 | `GET` | `/routine/{id}` | `{routine:{...}}` |
 | `GET` | `/routine_with_short_id/{shortId}` | by short id |
+| `POST` | `/routines_sync_batch` | list all routines via delta sync. Body is a map `{routine_id: updated_at}` of already-known routines (`{}` = fetch everything) → `{updated:[...], deleted:[...], isMore, updated_at}`; repeat with the ids you got while `isMore` |
+| `GET` | `/routine_folders` | `[{id, title, index, ...}]` |
 | `PUT` | `/routine/{id}?sendSyncEventToMobileApp=true` | body `{routine:{title, exercises:[{exercise_template_id, rest_seconds, sets, notes}], folder_id, index, program_id, notes, coach_force_rpe_enabled}}` |
 | `POST` | `/routine?sendSyncEventToMobileApp=true` | create routine (same body shape) |
 

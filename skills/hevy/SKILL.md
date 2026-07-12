@@ -77,6 +77,7 @@ python3 scripts/hevy.py <command> [options]
 | `workouts [--limit N] [--days N] [--json]` | Recent workouts, newest-first. `--days N` filters to the last N days; otherwise `--limit N` (default 10). `--json` prints raw nested data. |
 | `workout get <id> [--json]` | One workout in full: every exercise with its sets (reps × weight, RPE, PRs 🏆). `--json` for raw. |
 | `export [--out FILE]` | Fetch **all** workouts (auto-paged) → JSON file. Default `hevy_workouts_YYYYMMDD.json`. Use this for any analysis/stats over history. |
+| `routine list [--json]` | All routines: title, folder, exercise/set counts, id. Start here when the user names a routine. |
 | `routine get <id>` | Fetch a routine (template) as JSON |
 | `routine update <id> --file payload.json` | Update a routine from a JSON file (accepts the full object from `routine get` or a trimmed shape — it normalizes) |
 | `token status` / `token refresh` | Inspect or force-refresh the token |
@@ -106,11 +107,11 @@ this API — read/export only.
 
 **"Change my routine" (e.g. adjust rest times, add a set, edit reps):**
 ```bash
+python3 scripts/hevy.py routine list            # find the routine's id by title
 python3 scripts/hevy.py routine get <routine_id> > /tmp/r.json
 # edit /tmp/r.json — routine.exercises[].sets[].reps / weight_kg, rest_seconds, notes, ...
 python3 scripts/hevy.py routine update <routine_id> --file /tmp/r.json
 ```
-Get a routine's id from a workout's `routine_id` field, or from `routine get`.
 
 ## Gotchas
 

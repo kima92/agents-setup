@@ -19,6 +19,8 @@ Endpoints (reverse-engineered from the web app):
   GET  /workout_count                               total workout count
   GET  /user_workouts_paged?username&limit&offset   paged workout list
   GET  /routine/{id}                                single routine
+  POST /routines_sync_batch                         list all routines (delta sync)
+  GET  /routine_folders                             routine folders
   PUT  /routine/{id}?sendSyncEventToMobileApp=true  update routine
   POST /routine?sendSyncEventToMobileApp=true       create routine
 
@@ -217,6 +219,32 @@ class HevyClient:
     def get_routine(self, routine_id: str) -> dict:
         return self._request("GET", "/routine/%s" % routine_id)["routine"]
 
+    def list_routines(self) -> list[dict]:
+        """
+        All routines via POST /routines_sync_batch (the web app's delta-sync).
+
+        The request body is a map of {routine_id: updated_at} the client already
+        has; the server responds with {updated, deleted, isMore, updated_at}.
+        Starting from {} therefore returns everything, and we feed received ids
+        back in while isMore is set.
+        """
+        known: dict = {}
+        routines: dict = {}
+        while True:
+            data = self._request("POST", "/routines_sync_batch", body=known)
+            for r in data.get("updated", []):
+                routines[r["id"]] = r
+                known[r["id"]] = r.get("updated_at") or "2018-07-31T12:53:33.333Z"
+            if not data.get("isMore"):
+                break
+        return sorted(
+            routines.values(),
+            key=lambda r: (r.get("folder_id") is None, r.get("folder_id") or 0, r.get("index") or 0),
+        )
+
+    def get_routine_folders(self) -> list[dict]:
+        return self._request("GET", "/routine_folders")
+
     @staticmethod
     def _trim_routine(routine: dict) -> dict:
         # The API accepts only the shape the web app sends on save. Passing the
@@ -385,6 +413,24 @@ def cmd_workout_get(client: HevyClient, args) -> None:
     print(_fmt_workout_detail(w))
 
 
+def cmd_routine_list(client: HevyClient, args) -> None:
+    routines = client.list_routines()
+    if args.json:
+        json.dump(routines, sys.stdout, indent=2, ensure_ascii=False)
+        print()
+        return
+    folders = {f["id"]: f["title"] for f in client.get_routine_folders()}
+    print("# %d routines" % len(routines))
+    for r in routines:
+        n_ex = len(r.get("exercises", []))
+        n_sets = sum(len(e.get("sets", [])) for e in r.get("exercises", []))
+        folder = folders.get(r.get("folder_id"), "")
+        folder_s = "  [%s]" % folder if folder else ""
+        print("%-24.24s%s  %2d ex / %2d sets  id=%s" % (
+            r.get("title", ""), folder_s, n_ex, n_sets, r.get("id", ""),
+        ))
+
+
 def cmd_routine_get(client: HevyClient, args) -> None:
     r = client.get_routine(args.id)
     json.dump(r, sys.stdout, indent=2, ensure_ascii=False)
@@ -438,8 +484,11 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", help="output path (default hevy_workouts_YYYYMMDD.json)")
     e.set_defaults(func=cmd_export)
 
-    r = sub.add_parser("routine", help="routine read/update")
+    r = sub.add_parser("routine", help="routine list/read/update")
     rsub = r.add_subparsers(dest="raction", required=True)
+    rl = rsub.add_parser("list", help="list all routines (title, folder, id)")
+    rl.add_argument("--json", action="store_true", help="print raw JSON")
+    rl.set_defaults(func=cmd_routine_list)
     rg = rsub.add_parser("get", help="fetch a routine as JSON")
     rg.add_argument("id")
     rg.set_defaults(func=cmd_routine_get)
