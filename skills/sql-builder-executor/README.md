@@ -18,6 +18,12 @@ programmatic twin of the frontend SQL-builder screen.
 - **Layout-aware**: works both directly against the backend and through the
   public `/api` ingress (auto-detected, override with `CHIKABASE_API_LAYOUT`).
 
+## Install
+
+```bash
+npx skills add https://github.com/kima92/agents-setup --skill sql-builder-executor
+```
+
 See [SKILL.md](SKILL.md) for the full command reference. The CLI is a single
 stdlib-only Python script at `scripts/sql_executor.py`.
 
