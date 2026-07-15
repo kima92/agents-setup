@@ -25,8 +25,9 @@ doesn't:
 Three environment variables, all injected automatically into Chika Brain
 agent sessions (no setup needed there):
 
-- `CHIKABASE_BASE_URL` — API base, e.g. `http://localhost:3000/api`
-  (defaulted to that value when unset)
+- `CHIKABASE_BASE_URL` — the server root every route is concatenated onto,
+  e.g. `https://chikabase.payme.io/api` for the hosted proxy or
+  `http://localhost:3000` for a direct local backend (defaults to the latter)
 - `CHIKABASE_USER_ACCESS_KEY` — bearer token minted per run for the session's
   user; all requests are JWT-authenticated with it
 - `CHIKABASE_WORKSPACE_ID` — default workspace (override with

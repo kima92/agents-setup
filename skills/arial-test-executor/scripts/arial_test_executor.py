@@ -51,15 +51,27 @@ def emit(data):
     print(json.dumps(data, indent=2, default=str))
 
 
-def get_base_url():
-    base = os.environ.get("CHIKABASE_BASE_URL", "http://localhost:3000/api")
+def get_server_root():
+    """The configured server root — every route is concatenated onto this.
+
+    Relative to the Nest root the controllers are literally `/api/arial-test/...`
+    (there is no global prefix) and `/activities/...`. Configure
+    CHIKABASE_BASE_URL to whatever prefix reaches that root:
+    `https://chikabase.payme.io/api` for the hosted proxy, `http://localhost:3000`
+    for a direct local backend.
+    """
+    base = os.environ.get("CHIKABASE_BASE_URL", "http://localhost:3000")
     return base.rstrip("/")
 
 
+def get_base_url():
+    """Base for the `/api/...` controllers (arial routes hang off this)."""
+    return get_server_root() + "/api"
+
+
 def get_root_url():
-    """Server root (no /api suffix) — a few legacy routes live there."""
-    base = get_base_url()
-    return base[: -len("/api")] if base.endswith("/api") else base
+    """Server root — a few legacy routes (e.g. /activities) live here."""
+    return get_server_root()
 
 
 def get_token():
