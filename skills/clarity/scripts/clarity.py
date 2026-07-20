@@ -296,7 +296,92 @@ def cmd_recordings(args):
         "count": args.count,
     }
     result = post(SESSION_RECORDINGS_URL, token, body)
-    emit(result)
+    _warn_on_truncated_window(result, start_dt, end_dt, args.count)
+    if args.summary:
+        emit_recordings_summary(result)
+    else:
+        emit(result)
+
+
+def _session_times(result):
+    """Parsed timestamps of a /recordings/sample response, oldest first."""
+    if not isinstance(result, list):
+        return []
+    out = []
+    for r in result:
+        ts = r.get("timestamp") if isinstance(r, dict) else None
+        if not ts:
+            continue
+        try:
+            out.append(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def _warn_on_truncated_window(result, start_dt, end_dt, count):
+    """The endpoint samples the most RECENT sessions and silently ignores the rest
+    of the window. On a busy project a '30 day' query can come back covering only
+    minutes — which reads as 'no such session' when it really means 'never looked'.
+    Say so on stderr rather than letting the caller conclude absence."""
+    times = _session_times(result)
+    if not times:
+        return
+    requested = (end_dt - start_dt).total_seconds()
+    covered = (times[-1] - times[0]).total_seconds()
+    hit_cap = isinstance(result, list) and len(result) >= count
+    # Only meaningful when the result set is cap-sized; a short-of-cap response
+    # means the filter really did exhaust the matches.
+    if hit_cap and requested > 0 and covered < requested * 0.5:
+        eprint(
+            f"warning: got {len(result)} sessions (= --count cap) spanning only "
+            f"{_human_span(covered)} ({times[0]:%Y-%m-%d %H:%M} → {times[-1]:%Y-%m-%d %H:%M} UTC), "
+            f"but you asked for {_human_span(requested)}.\n"
+            "         /recordings/sample returns the most recent matches and stops at the cap, "
+            "so older sessions in your window were never searched.\n"
+            "         An empty or short result here is NOT proof the session doesn't exist. "
+            "Narrow the filters or query smaller windows with --start/--end."
+        )
+
+
+def _human_span(seconds):
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def emit_recordings_summary(result):
+    """One block per session instead of the full nested JSON — the raw response is
+    ~200 lines per session, which buries the answer when you are looking for one."""
+    if not isinstance(result, list):
+        emit(result)
+        return
+    if not result:
+        print("no sessions matched")
+        return
+    for r in result:
+        timeline = r.get("timeline") or []
+        events = [e for p in timeline for e in (p.get("timelineEvents") or [])]
+        kinds = {}
+        for e in events:
+            kinds[e.get("eventtype", "?")] = kinds.get(e.get("eventtype", "?"), 0) + 1
+        print(f"{r.get('timestamp')}  {r.get('totalDuration')} "
+              f"({r.get('activeDuration')} active)  "
+              f"{r.get('pagesCount')} page(s)  {r.get('sessionClickCount')} click(s)")
+        print(f"  player: {r.get('link')}")
+        for p in timeline:
+            print(f"  [{p.get('start')}] {p.get('url')}")
+            title = p.get("displayTitle")
+            if title:
+                print(f"           title: {title}")
+        if kinds:
+            print("  events: " + ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())))
+        print()
+    print(f"— {len(result)} session(s)")
 
 
 def _parse_dt(s, flag):
@@ -327,7 +412,56 @@ def cmd_whoami(args):
         out["jwt_payload"] = payload
     else:
         out["note"] = "token is not a decodable JWT; cannot introspect (it may still be valid)"
+
+    # Clarity tokens carry no project id in their claims, but the token IS scoped to
+    # one project — so a query that "finds nothing" is often just the wrong project.
+    # Recover the id from a player link (…/player/<projectId>/<sessionId>/…).
+    if not args.no_probe:
+        out["project_id"] = _probe_project_id(token) or "unknown (no recent sessions to sample)"
+        out["project_hint"] = ("Compare this against the project id in your "
+                               "clarity.microsoft.com URL. If they differ, this token "
+                               "cannot see that project's data — generate a token there.")
     emit(out)
+
+
+def _post_quiet(url, token, body):
+    """post() variant that returns None instead of printing and exiting. Used by
+    whoami's probe, where a failure is informational, not fatal."""
+    saved, sys.stderr = sys.stderr, open(os.devnull, "w")
+    try:
+        return post(url, token, body)
+    except SystemExit:
+        return None
+    finally:
+        sys.stderr.close()
+        sys.stderr = saved
+
+
+def _probe_project_id(token):
+    """Best-effort: sample one recent recording and read the project id off its link."""
+    now = datetime.now(timezone.utc)
+    start, end = iso_ms(now - timedelta(days=3)), iso_ms(now)
+    try:
+        # The server 500s unless filters carries its own date window, so mirror
+        # exactly what cmd_recordings sends rather than posting bare filters.
+        result = _post_quiet(SESSION_RECORDINGS_URL, token, {
+            "sortBy": SORT_OPTIONS["SessionStart_DESC"],
+            "start": start,
+            "end": end,
+            "filters": {"date": {"start": start, "end": end}},
+            "count": 1,
+        })
+    except SystemExit:
+        return None
+    if not isinstance(result, list):
+        return None
+    for r in result:
+        link = r.get("link") if isinstance(r, dict) else None
+        if link and "/player/" in link:
+            tail = link.split("/player/", 1)[1].split("/")
+            if tail and tail[0]:
+                return tail[0]
+    return None
 
 
 def _token_source(cli_token):
@@ -411,10 +545,15 @@ def build_parser():
                    help="Raw FiltersType JSON object (escape hatch for any field).")
     r.add_argument("--filters-file", dest="filters_file",
                    help="Path to a JSON file holding the FiltersType object.")
+    r.add_argument("--summary", action="store_true",
+                   help="Print a compact per-session digest (timestamp, player link, "
+                        "URLs, event counts) instead of the full nested JSON.")
     r.set_defaults(func=cmd_recordings)
 
     # whoami
-    w = sub.add_parser("whoami", help="Show the resolved token source and (if a JWT) its claims.")
+    w = sub.add_parser("whoami", help="Show the resolved token source, its claims, and the project it is scoped to.")
+    w.add_argument("--no-probe", action="store_true", dest="no_probe",
+                   help="Skip the recordings probe used to discover the project id.")
     w.set_defaults(func=cmd_whoami)
 
     return p

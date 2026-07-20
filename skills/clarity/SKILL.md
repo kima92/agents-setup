@@ -103,6 +103,36 @@ Sort options (`--sort`): `SessionStart_DESC` (default, newest first),
 `SessionStart_ASC`, `SessionDuration_ASC/DESC`, `SessionClickCount_ASC/DESC`,
 `PageCount_ASC/DESC`. `--count` max is 250 (default 100).
 
+Add `--summary` for a compact per-session digest (timestamp, player link, page
+URLs, event counts) instead of the raw nested JSON — the full response runs
+~200 lines *per session*, which buries the answer when you are hunting for one.
+
+### Recent sessions are not queryable yet (ingestion lag)
+
+**A session visible in the Clarity web UI can still be missing from this API.**
+Measured directly: a session that started 11:36 UTC and ran 5m20s was *not*
+returned by `--url-contains <its sale id>` at 11:56, and *was* returned by the
+identical query at 12:16 — while being visible in the web UI the whole time.
+So budget **roughly 30–45 minutes** after a session ends before the API can see it.
+
+The consequence: **an empty result for a recent session is not evidence it
+doesn't exist.** Before concluding anything from a miss, check the session's age.
+If it is under ~an hour old, wait and re-run the same query rather than
+concluding absence or hunting for a filter bug. The web UI is the source of
+truth for anything fresh.
+
+### Unfiltered sampling is capped, and the cap is the recent edge
+
+Separately, an **unfiltered** `/recordings/sample` returns the most recent
+sessions and stops at `--count`, so on a busy project `--days 30 --count 250`
+comes back covering minutes, not days. This does **not** apply to filtered
+queries — a `--url-contains` filter searches the whole window server-side and
+reaches sessions far older than that recent slice.
+
+The CLI warns on stderr when a cap-sized result covers far less than the
+requested window. Treat that warning as "this unfiltered sample is only the
+recent edge", not as "filters can't reach back" — they can.
+
 **Anything not covered by a flag** — entry/exit URLs, UTM source/medium/campaign,
 channel, Core Web Vitals ranges, scroll depth, product/e-commerce filters,
 user type, session intent — goes through the raw escape hatch:
