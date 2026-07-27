@@ -2,6 +2,66 @@
 
 A comprehensive guide for creating professional software diagrams using Mermaid's text-based syntax. This skill enables you to visualize system architecture, document code structure, model databases, and communicate technical concepts through diagrams.
 
+Ported from [softaworks/agent-toolkit](https://github.com/softaworks/agent-toolkit/tree/main/skills/mermaid-diagrams), with two additions: **timeline diagrams** and a **verified escaping reference** whose rules were each confirmed by rendering them through the real renderer.
+
+## Install
+
+```bash
+npx skills add https://github.com/kima92/agents-setup --skill mermaid-diagrams
+```
+
+## Requirements
+
+None. This is a documentation-only skill — no scripts, no credentials, no
+`pip install`. Mermaid renders server-side on GitHub/GitLab and in most wikis,
+so diagrams work as soon as you write them into a `.md` file.
+
+## Setup (optional — local rendering)
+
+Only needed if you want to render or validate diagrams locally instead of
+pasting into [mermaid.live](https://mermaid.live):
+
+```bash
+# One-off render, no install (what this skill's rules were verified with)
+npx -p @mermaid-js/mermaid-cli@11 mmdc -i diagram.mmd -o diagram.svg
+
+# Or install the CLI globally
+npm install -g @mermaid-js/mermaid-cli
+mmdc -i diagram.mmd -o diagram.png
+
+# Or via Docker
+docker run --rm -v "$(pwd):/data" minlag/mermaid-cli -i /data/diagram.mmd -o /data/diagram.svg
+```
+
+To validate a diagram, render it and check the exit status — a syntax error
+fails the command and prints `Parse error on line N`:
+
+```bash
+npx -p @mermaid-js/mermaid-cli@11 mmdc -i diagram.mmd -o /tmp/out.svg && echo "valid"
+```
+
+Note that a diagram can render successfully and still be wrong: raw `"` and `<`
+inside labels corrupt text *silently* rather than erroring. See
+[references/escaping-and-labels.md](references/escaping-and-labels.md).
+
+## Layout
+
+```
+mermaid-diagrams/
+├── SKILL.md                              # when-to-use + diagram selection + quick starts
+├── README.md                             # this file
+└── references/
+    ├── class-diagrams.md                 # relationships, multiplicity, methods
+    ├── sequence-diagrams.md              # messages, activations, alt/loop/opt
+    ├── flowcharts.md                     # node shapes, decision logic, subgraphs
+    ├── erd-diagrams.md                   # cardinality, keys, attributes
+    ├── c4-diagrams.md                    # context, container, component levels
+    ├── architecture-diagrams.md          # cloud services, infrastructure, CI/CD
+    ├── timeline-diagrams.md              # periods, sections, incident chronologies
+    ├── escaping-and-labels.md            # label quoting, escaping, node ID rules
+    └── advanced-features.md              # themes, styling, configuration
+```
+
 ## Purpose
 
 Transform complex technical concepts into clear, maintainable diagrams that can be version-controlled alongside your code. Mermaid diagrams are rendered from simple text definitions, making them easy to update, review in pull requests, and maintain over time.
