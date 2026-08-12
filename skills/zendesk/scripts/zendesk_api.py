@@ -27,6 +27,12 @@ Environment Variables Required:
     ZENDESK_EMAIL      - The agent email address used for the API token.
     ZENDESK_API_TOKEN  - An API token (Admin Center > Apps and integrations >
                          APIs > Zendesk API > Token access).
+
+Optional:
+    ZENDESK_READ_ONLY  - Read-only mode, ON by default. While enabled, every
+                         write command (create/update/comment) is refused and no
+                         non-GET request is ever sent. Set it to 0/false/no/off
+                         to allow writes.
 """
 
 import argparse
@@ -59,6 +65,32 @@ class TransportError(Exception):
 
 class ConfigurationError(Exception):
     """Raised when required configuration (env vars) is missing or invalid."""
+
+
+class ReadOnlyError(Exception):
+    """Raised when a write is attempted while ZENDESK_READ_ONLY is enabled."""
+
+
+# --- Read-only mode ---
+
+# Commands that mutate Zendesk data; refused while read-only mode is on.
+WRITE_COMMANDS = {
+    "create-ticket",
+    "update-ticket",
+    "add-comment",
+    "create-user",
+    "update-user",
+    "create-organization",
+}
+
+# Values that turn read-only mode OFF. Anything else (including unset) leaves it
+# ON: the default is read-only, so a typo fails safe.
+_READ_ONLY_OFF = {"0", "false", "no", "off"}
+
+
+def is_read_only():
+    """Whether write operations are disabled. Defaults to True (read-only)."""
+    return os.environ.get("ZENDESK_READ_ONLY", "1").strip().lower() not in _READ_ONLY_OFF
 
 
 # --- HTTP transport (curl by default, urllib fallback) ---
@@ -176,6 +208,7 @@ class ZendeskClient:
         subdomain = subdomain.replace(".zendesk.com", "")
 
         self.subdomain = subdomain
+        self.read_only = is_read_only()
         self.base_url = "https://{}.zendesk.com/api/v2".format(subdomain)
         # Zendesk API-token auth: username is "{email}/token", password is the token.
         self.auth = ("{}/token".format(email), token)
@@ -191,6 +224,10 @@ class ZendeskClient:
         return url
 
     def _request(self, method, path, params=None, body=None):
+        if self.read_only and method.upper() not in ("GET", "HEAD"):
+            raise ReadOnlyError(
+                "Read-only mode is on (ZENDESK_READ_ONLY): refusing to send {} {}. "
+                "Set ZENDESK_READ_ONLY=0 to allow write operations.".format(method, path))
         url = path if path.startswith("http") else self._url(path, params)
         headers = {"Accept": "application/json"}
         data = None
@@ -644,7 +681,10 @@ def comment_visibility(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Zendesk Support REST API v2 CLI")
+    parser = argparse.ArgumentParser(
+        description="Zendesk Support REST API v2 CLI",
+        epilog="Read-only mode is ON by default (ZENDESK_READ_ONLY=1): commands marked "
+               "[write] are refused. Set ZENDESK_READ_ONLY=0 to enable them.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # tickets
@@ -674,7 +714,7 @@ def build_parser():
     p.add_argument("--format", choices=["text", "json"], default="text",
                    help="Output as plain text (default) or trimmed JSON")
 
-    p = sub.add_parser("create-ticket", help="Create a new ticket")
+    p = sub.add_parser("create-ticket", help="[write] Create a new ticket")
     p.add_argument("--subject", required=True)
     p.add_argument("--comment", help="First comment body (required unless --comment-file)")
     p.add_argument("--comment-file", help="Read the comment body from a file ('-' for stdin)")
@@ -687,7 +727,7 @@ def build_parser():
     p.add_argument("--status", choices=["new", "open", "pending", "hold", "solved", "closed"])
     p.add_argument("--tags", help="Comma-separated tags")
 
-    p = sub.add_parser("update-ticket", help="Update ticket fields and/or add a comment")
+    p = sub.add_parser("update-ticket", help="[write] Update ticket fields and/or add a comment")
     p.add_argument("--ticket-id", required=True)
     p.add_argument("--status", choices=["new", "open", "pending", "hold", "solved", "closed"])
     p.add_argument("--priority", choices=["low", "normal", "high", "urgent"])
@@ -700,7 +740,7 @@ def build_parser():
     p.add_argument("--comment-file", help="Read the comment body from a file ('-' for stdin)")
     p.add_argument("--internal", action="store_true", help="Make the comment a private note")
 
-    p = sub.add_parser("add-comment", help="Add a public reply (or internal note) to a ticket")
+    p = sub.add_parser("add-comment", help="[write] Add a public reply (or internal note) to a ticket")
     p.add_argument("--ticket-id", required=True)
     p.add_argument("--text", help="Comment body (required unless --text-file)")
     p.add_argument("--text-file", help="Read the comment body from a file ('-' for stdin)")
@@ -729,14 +769,14 @@ def build_parser():
     p.add_argument("--per-page", type=int)
     p.add_argument("--page", type=int)
 
-    p = sub.add_parser("create-user", help="Create a user")
+    p = sub.add_parser("create-user", help="[write] Create a user")
     p.add_argument("--name", required=True)
     p.add_argument("--email", required=True)
     p.add_argument("--role", choices=["end-user", "agent", "admin"])
     p.add_argument("--organization", help="Organization name or numeric id")
     p.add_argument("--verified", action="store_true", help="Mark the email as verified")
 
-    p = sub.add_parser("update-user", help="Update a user's fields")
+    p = sub.add_parser("update-user", help="[write] Update a user's fields")
     p.add_argument("--user", required=True, help="Target user: id, email, or name")
     p.add_argument("--name")
     p.add_argument("--email")
@@ -753,7 +793,7 @@ def build_parser():
     p = sub.add_parser("get-organization", help="Get an organization by id or name")
     p.add_argument("--organization", required=True)
 
-    p = sub.add_parser("create-organization", help="Create an organization")
+    p = sub.add_parser("create-organization", help="[write] Create an organization")
     p.add_argument("--name", required=True)
     p.add_argument("--domain-names", help="Comma-separated domain names")
     p.add_argument("--notes")
@@ -772,6 +812,12 @@ def build_parser():
 
 def dispatch(client, args):
     cmd = args.command
+
+    # Refuse write commands up front, before any lookup call is made.
+    if client.read_only and cmd in WRITE_COMMANDS:
+        raise ReadOnlyError(
+            "'{}' is a write operation and read-only mode is on (ZENDESK_READ_ONLY defaults to 1). "
+            "Set ZENDESK_READ_ONLY=0 to allow it.".format(cmd))
 
     if cmd == "list-tickets":
         return client.list_tickets(args.sort_by, args.sort_order, args.per_page, args.page, args.cursor)
@@ -856,6 +902,9 @@ def main():
             sys.stdout.write(result + "\n")
         else:
             output_json(result)
+    except ReadOnlyError as e:
+        sys.stderr.write("Read-Only Mode: {}\n".format(e))
+        sys.exit(3)
     except ConfigurationError as e:
         sys.stderr.write("Configuration Error: {}\n".format(e))
         sys.exit(2)

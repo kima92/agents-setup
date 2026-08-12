@@ -6,7 +6,8 @@ searching, creating and updating tickets, replying to customers or leaving
 internal notes, and looking up users, organizations, and agent groups.
 
 It is **non-destructive**: it never deletes tickets, users, organizations, or
-groups.
+groups. It is also **read-only by default** — writes have to be enabled
+explicitly with `ZENDESK_READ_ONLY=0`.
 
 ## Install
 
@@ -26,6 +27,21 @@ export ZENDESK_API_TOKEN="…"             # Admin Center → APIs → Token acc
 
 No third-party Python packages are needed — the script uses `curl` (falling
 back to stdlib `urllib`) and the Python standard library only.
+
+### Read-only mode
+
+`ZENDESK_READ_ONLY` defaults to `1`. While it's on, the write commands
+(`create-ticket`, `update-ticket`, `add-comment`, `create-user`, `update-user`,
+`create-organization`) are refused with exit code 3, and the transport layer
+blocks any non-GET request as a second line of defense. Reads are unaffected.
+
+```bash
+export ZENDESK_READ_ONLY=0               # allow writes for the whole session
+ZENDESK_READ_ONLY=0 python3 scripts/zendesk_api.py add-comment …   # or per command
+```
+
+Only `0`, `false`, `no`, and `off` disable it; anything else (including a typo)
+keeps read-only on.
 
 ## Usage
 

@@ -1,6 +1,6 @@
 ---
 name: zendesk
-description: This skill enables interaction with the Zendesk Support REST API v2 for ticket and customer management. Use when the user wants to list, read, search, create, or update Zendesk tickets, read a ticket's conversation, post a public reply or internal note on a ticket, change ticket status/priority/assignee/tags, or look up and manage Zendesk users, organizations, and agent groups. Trigger this whenever the user mentions Zendesk, a support ticket, a ticket number, replying to a customer, ticket status/priority/assignee, an end-user or requester, a support organization, or agent groups — even if they don't name the API explicitly. For finding tickets or users across the whole account, prefer this skill's search over paging through lists one by one. This skill is non-destructive — it never deletes tickets, users, organizations, or groups.
+description: This skill enables interaction with the Zendesk Support REST API v2 for ticket and customer management. Use when the user wants to list, read, search, create, or update Zendesk tickets, read a ticket's conversation, post a public reply or internal note on a ticket, change ticket status/priority/assignee/tags, or look up and manage Zendesk users, organizations, and agent groups. Trigger this whenever the user mentions Zendesk, a support ticket, a ticket number, replying to a customer, ticket status/priority/assignee, an end-user or requester, a support organization, or agent groups — even if they don't name the API explicitly. For finding tickets or users across the whole account, prefer this skill's search over paging through lists one by one. This skill is non-destructive — it never deletes tickets, users, organizations, or groups — and it runs read-only by default, refusing every create/update/comment command unless ZENDESK_READ_ONLY is set to 0.
 ---
 
 # Zendesk Support
@@ -14,6 +14,7 @@ behind a ticket.
 It is deliberately **non-destructive** — it can create and update tickets,
 users, and organizations, but it never deletes anything. The strongest "remove"
 it does is clearing a field through an update (e.g. unassigning a ticket).
+On top of that it is **read-only by default** — see below.
 
 ## Prerequisites
 
@@ -26,6 +27,11 @@ The following environment variables must be set:
 - `ZENDESK_API_TOKEN` — an API token (Admin Center → Apps and integrations →
   APIs → Zendesk API → enable Token access and add a token).
 
+Optional:
+
+- `ZENDESK_READ_ONLY` — read-only mode, **on by default** (see *Read-only mode*
+  below). Set it to `0` to allow writes.
+
 Authentication is standard Zendesk API-token basic auth: the username is
 `{email}/token` and the password is the token. The curl idiom
 `-u "$ZENDESK_EMAIL/token:$ZENDESK_API_TOKEN"` is exactly this — the script
@@ -34,6 +40,39 @@ builds the same credentials for you.
 No third-party Python libraries are needed. The script talks to the API with
 `curl` by default (capturing the HTTP status via `-w "%{http_code}"`) and
 automatically falls back to Python's stdlib `urllib` when `curl` is unavailable.
+
+## Read-only mode (the default)
+
+Unless `ZENDESK_READ_ONLY` is explicitly set to `0` (or `false`/`no`/`off`), the
+script runs read-only: every write command is refused before it does anything,
+and the transport layer additionally blocks any non-GET request, so nothing in
+Zendesk can be changed. Refusals go to stderr with exit code **3**:
+
+```
+Read-Only Mode: 'add-comment' is a write operation and read-only mode is on
+(ZENDESK_READ_ONLY defaults to 1). Set ZENDESK_READ_ONLY=0 to allow it.
+```
+
+The blocked commands are `create-ticket`, `update-ticket`, `add-comment`,
+`create-user`, `update-user`, and `create-organization` (marked **[write]**
+in the tables below). Every read command — listing, `compact-ticket`, `search`,
+and all the get/lookup commands — works normally.
+
+Any unrecognized value leaves read-only **on**, so a typo fails safe.
+
+```bash
+# Reads: always fine
+python3 .claude/skills/zendesk/scripts/zendesk_api.py compact-ticket --ticket-id 12345
+
+# Writes: enable them explicitly for the command (or export it for the session)
+ZENDESK_READ_ONLY=0 python3 .claude/skills/zendesk/scripts/zendesk_api.py \
+  add-comment --ticket-id 12345 --text "Thanks — a fix is on the way."
+```
+
+When a user asks for a write and the run is read-only, don't silently skip the
+work: report that read-only mode blocked it and tell them to set
+`ZENDESK_READ_ONLY=0`. Do not flip the variable yourself on their behalf unless
+they've asked for the write to actually go through.
 
 ## Names and emails instead of IDs — pass them directly
 
@@ -72,9 +111,9 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 | `compact-ticket` | Token-efficient plain-text view of a ticket **and** its comments in one call |
 | `get-ticket` | Get a single ticket by id (full raw JSON) |
 | `get-comments` | Get a ticket's conversation (all comments, full raw JSON) |
-| `create-ticket` | Create a new ticket with a first comment |
-| `update-ticket` | Update fields (status/priority/assignee/group/tags/subject) and/or add a comment |
-| `add-comment` | Add a public reply or internal note to a ticket |
+| `create-ticket` | **[write]** Create a new ticket with a first comment |
+| `update-ticket` | **[write]** Update fields (status/priority/assignee/group/tags/subject) and/or add a comment |
+| `add-comment` | **[write]** Add a public reply or internal note to a ticket |
 
 ### Search Commands
 
@@ -89,8 +128,8 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 | `list-users` | List users (optionally filtered by role) |
 | `get-user` | Get a user by id, email, or name |
 | `search-users` | Search users by name, email, or query |
-| `create-user` | Create an end-user, agent, or admin |
-| `update-user` | Update a user's fields |
+| `create-user` | **[write]** Create an end-user, agent, or admin |
+| `update-user` | **[write]** Update a user's fields |
 
 ### Organization Commands
 
@@ -98,7 +137,7 @@ python3 .claude/skills/zendesk/scripts/zendesk_api.py <command> [options]
 |---------|-------------|
 | `list-organizations` | List organizations |
 | `get-organization` | Get an organization by id or name |
-| `create-organization` | Create an organization |
+| `create-organization` | **[write]** Create an organization |
 
 ### Group Commands
 
@@ -284,6 +323,9 @@ the script resolve it. Only fall back to an explicit id when a name is ambiguous
 The script outputs JSON for successful operations and writes error messages to
 stderr (with a non-zero exit code) for failures. Common cases:
 
+- **Read-Only Mode: '…' is a write operation …** (exit code 3) — read-only mode
+  is on, which is the default. Re-run the command with `ZENDESK_READ_ONLY=0`
+  once the user has confirmed the write should go through.
 - **Configuration Error: Missing required environment variable(s): …** — set
   `ZENDESK_SUBDOMAIN`, `ZENDESK_EMAIL`, and `ZENDESK_API_TOKEN`.
 - **Zendesk API error (HTTP 401) …** — bad credentials, or token access isn't
