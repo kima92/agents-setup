@@ -41,6 +41,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Non-ASCII output (Hebrew, Arabic, emoji, ...) must survive the trip to the
+# terminal or a pipe even when the ambient locale is C/POSIX, where stdout
+# would otherwise default to ASCII and raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # pragma: no cover - pre-3.7 / odd stream
+        pass
+
 
 # --- Status maps -------------------------------------------------------------
 
@@ -228,7 +237,7 @@ class TestRailClient:
         data = None
         if json_body is not None:
             headers["Content-Type"] = "application/json"
-            data = json.dumps(json_body)
+            data = json.dumps(json_body, ensure_ascii=False)
 
         status, text = http_request(method, url, headers=headers, data=data, auth=self._auth)
         if not (200 <= status < 300):
@@ -442,7 +451,7 @@ class TestRailClient:
 # --- Helpers -----------------------------------------------------------------
 
 def output_json(data):
-    print(json.dumps(data, indent=2, default=str))
+    print(json.dumps(data, indent=2, default=str, ensure_ascii=False))
 
 
 CASE_ID_RE = re.compile(r"\bC(\d+)\b")
@@ -764,7 +773,7 @@ def cmd_read_run(client, args):
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "run.json"), "w", encoding="utf-8") as f:
-        json.dump(dump, f, indent=2, default=str)
+        json.dump(dump, f, indent=2, default=str, ensure_ascii=False)
     for t in dump["tests"]:
         with open(os.path.join(args.out, t["file"]), "w", encoding="utf-8") as f:
             f.write(render_case_md(dump["run"], t))

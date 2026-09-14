@@ -26,6 +26,15 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Non-ASCII output (Hebrew, Arabic, emoji, ...) must survive the trip to the
+# terminal or a pipe even when the ambient locale is C/POSIX, where stdout
+# would otherwise default to ASCII and raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # pragma: no cover - pre-3.7 / odd stream
+        pass
+
 API_BASE_URL = "https://clarity.microsoft.com/mcp"
 ANALYTICS_DASHBOARD_URL = f"{API_BASE_URL}/dashboard/query"
 SESSION_RECORDINGS_URL = f"{API_BASE_URL}/recordings/sample"
@@ -103,7 +112,7 @@ def decode_jwt_payload(token):
 # HTTP
 # --------------------------------------------------------------------------- #
 def post(url, token, body):
-    data = json.dumps(body).encode("utf-8")
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,

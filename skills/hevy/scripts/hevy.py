@@ -39,6 +39,15 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+# Non-ASCII output (Hebrew, Arabic, emoji, ...) must survive the trip to the
+# terminal or a pipe even when the ambient locale is C/POSIX, where stdout
+# would otherwise default to ASCII and raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # pragma: no cover - pre-3.7 / odd stream
+        pass
+
 API_BASE = "https://api.hevyapp.com"
 API_KEY = "shelobs_hevy_web"          # static web-client key, from x-api-key header
 PLATFORM = "web"                        # Hevy-Platform header
@@ -84,7 +93,7 @@ class HevyClient:
     def _save_token(self) -> None:
         os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
         with open(self.token_path, "w") as f:
-            json.dump(self.token, f, indent=2)
+            json.dump(self.token, f, indent=2, ensure_ascii=False)
         os.chmod(self.token_path, 0o600)
 
     # ---- auth --------------------------------------------------------------
@@ -151,7 +160,7 @@ class HevyClient:
         if params:
             url += "?" + urllib.parse.urlencode(params)
 
-        payload = json.dumps(body).encode() if body is not None else None
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
         req = urllib.request.Request(
             url,
             data=payload,

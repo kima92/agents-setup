@@ -37,11 +37,12 @@ mkdir -p "${HOME}/.hevy"; chmod 700 "${HOME}/.hevy"
 echo "$JS" | agent-browser --session "$SESSION" eval --stdin \
   | python3 -c '
 import json,sys,os
+sys.stdout.reconfigure(encoding="utf-8"); sys.stderr.reconfigure(encoding="utf-8")
 raw=sys.stdin.read().strip()
 data=json.loads(json.loads(raw)) if raw.startswith("\"") else json.loads(raw)
 if data.get("error"):
     print("error:",data["error"],file=sys.stderr); sys.exit(1)
 p=os.path.expanduser("~/.hevy/token.json")
-json.dump(data,open(p,"w"),indent=2); os.chmod(p,0o600)
+json.dump(data,open(p,"w",encoding="utf-8"),indent=2,ensure_ascii=False); os.chmod(p,0o600)
 print("seeded",p,"for",data.get("username"),"(expires",data.get("expires_at")+")")
 '

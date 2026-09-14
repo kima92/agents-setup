@@ -22,6 +22,15 @@ import time
 import urllib.error
 import urllib.request
 
+# Non-ASCII output (Hebrew, Arabic, emoji, ...) must survive the trip to the
+# terminal or a pipe even when the ambient locale is C/POSIX, where stdout
+# would otherwise default to ASCII and raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):  # pragma: no cover - pre-3.7 / odd stream
+        pass
+
 SENSITIVE_KEY_PATTERN = re.compile(r"password|secret|token|pat|key", re.IGNORECASE)
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ACTIVITY_BRANCH_PATTERN = re.compile(r"^activity-(\d+)-\d+$")
@@ -48,7 +57,7 @@ def fail(message):
 
 
 def emit(data):
-    print(json.dumps(data, indent=2, default=str))
+    print(json.dumps(data, indent=2, default=str, ensure_ascii=False))
 
 
 def get_server_root():
@@ -87,7 +96,7 @@ def get_token():
 
 def http_request(method, url, body=None):
     token = get_token()
-    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     if shutil.which("curl"):
         return _curl_request(method, url, token, payload)
     return _urllib_request(method, url, token, payload)
