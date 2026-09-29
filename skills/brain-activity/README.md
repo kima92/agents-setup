@@ -12,6 +12,8 @@ existing conversation, its messages, and its artifacts back by id.
 - **Monitors the agent**: `chat` sends a message and polls until the assistant
   reply stops streaming, logging each status change and the files/searches/APIs
   the agent touches, then prints the reply and any generated artifacts.
+- **Audits answers**: `messages --logs` attaches each reply's agent execution
+  trace (tool calls, inputs, results) so you can see where a claim came from.
 
 See [SKILL.md](SKILL.md) for the full command reference. The CLI is a single
 stdlib-only Python script at `scripts/brain_activity.py`.

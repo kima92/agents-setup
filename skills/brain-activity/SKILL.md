@@ -1,6 +1,6 @@
 ---
 name: brain-activity
-description: Drive Chika Brain conversations (activities) through the Chikabase REST API from an agent session. Use whenever the user wants to talk to the Brain agent programmatically — "start a Brain session and ask it to …", "open a new Brain conversation about withdrawals", "send this to the Brain agent and wait for its answer", "run a Brain preset against …" — or to pull an existing conversation back by id — "show me the messages in Brain activity 42", "get the assistant's last reply in conversation 42", "fetch artifact 591", "what artifacts did activity 42 produce", "list the Brain conversations in this workspace". The headline `chat` command creates (or continues) an activity, sends a message, and MONITORS the agent — polling until the assistant reply stops streaming while logging each status change and the files/searches/APIs it touches — then prints the reply plus any generated artifacts. Also lists presets and fetches conversations, messages, artifacts, resources, and pinned artifacts by id. Trigger on any mention of Brain conversations/activities/sessions, sending a message to the Brain agent, monitoring a Brain run, or retrieving Brain messages/artifacts by id.
+description: Drive Chika Brain conversations (activities) through the Chikabase REST API from an agent session. Use whenever the user wants to talk to the Brain agent programmatically — "start a Brain session and ask it to …", "open a new Brain conversation about withdrawals", "send this to the Brain agent and wait for its answer", "run a Brain preset against …" — or to pull an existing conversation back by id — "show me the messages in Brain activity 42", "get the assistant's last reply in conversation 42", "fetch artifact 591", "what artifacts did activity 42 produce", "list the Brain conversations in this workspace", "which tools did Brain call to answer that", "where did Brain get that info". The headline `chat` command creates (or continues) an activity, sends a message, and MONITORS the agent — polling until the assistant reply stops streaming while logging each status change and the files/searches/APIs it touches — then prints the reply plus any generated artifacts. Also lists presets and fetches conversations, messages (optionally with the agent's execution logs — every tool call, input, and result — to audit where an answer came from), artifacts, resources, and pinned artifacts by id. Trigger on any mention of Brain conversations/activities/sessions, sending a message to the Brain agent, monitoring a Brain run, or retrieving Brain messages/artifacts by id.
 ---
 
 # Brain Activity
@@ -71,6 +71,8 @@ resource bump to stderr, returning when the reply is `completed`/`error`/
 ```bash
 python3 $S messages --activity-id 42                 # whole conversation
 python3 $S messages --activity-id 42 --role assistant --full
+python3 $S messages --activity-id 42 --logs          # + agent tool-call trace per reply
+python3 $S messages --activity-id 42 --message-id 7 --logs --full   # one reply, untruncated
 python3 $S activity --activity-id 42                 # metadata (+ --full for raw)
 python3 $S list --status active                      # workspace activities
 python3 $S list --search withdrawals                 # free-text over title/description
@@ -82,13 +84,24 @@ python3 $S pinned-artifacts --activity-id 42 --resolve
 python3 $S presets                                   # slugs for --preset (--full for detail)
 ```
 
+### Agent logs — where did an answer come from?
+
+`messages --logs` attaches `agentLogs` to each **assistant** message: the
+ordered trace of the run that produced it (fetched from
+`GET /activities/<executionActivityId>/logs`). Steps are `text` (agent
+narration), `tool_call` (`tool` + `input`), `tool_result` (`content`, truncated
+to 500 chars unless `--full`), `status`, and a final `result` with token usage
+and cost. Use it to audit a claim: which knowledge-base pages, files, SQL, or
+web fetches the agent actually read — and which facts came from none of them.
+`--raw-logs` returns the unprocessed events instead.
+
 ## Command summary
 
 | Command | Description |
 |---------|-------------|
 | `chat --message <text>` | Create/continue a conversation, monitor the agent, print the reply |
 | `create [--title] [--preset] [--description]` | Create an empty activity, no message |
-| `messages --activity-id N [--role] [--full]` | A conversation's messages |
+| `messages --activity-id N [--role] [--message-id] [--logs [--raw-logs]] [--full]` | A conversation's messages; `--logs` adds each reply's agent trace |
 | `activity --activity-id N [--full]` | One activity's details |
 | `list [--status] [--created-by id\|email\|name] [--search text] [--workspace-id]` | Activities in a workspace (filters combine; `--created-by` resolves a unique email/name) |
 | `presets [--full]` | Available presets (slug + name + description) |

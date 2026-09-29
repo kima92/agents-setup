@@ -490,12 +490,93 @@ def command_create(args):
     emit(summarize_activity(activity))
 
 
+def fetch_execution_logs(execution_activity_id):
+    """Raw agent log events of one execution run (a message's executionActivityId).
+
+    The logs route belongs to the ChikaDev activities controller, which sits at
+    the server root (`/activities/:id/logs`), not under `/api` like brain routes.
+    """
+    logs = http_request(
+        "GET", get_root_url() + "/activities/%d/logs" % execution_activity_id
+    )
+    if isinstance(logs, dict):
+        logs = logs.get("logs") or logs.get("data") or []
+    return logs if isinstance(logs, list) else []
+
+
+def _tool_result_text(block):
+    content = block.get("content")
+    if isinstance(content, list):
+        parts = [
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        ]
+        return "\n".join(parts)
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+def summarize_log_events(events, result_limit):
+    """Condense raw agent events into an ordered trace of text / tool calls / results.
+
+    Each assistant text block, tool_use (name + input) and tool_result (truncated
+    to `result_limit` chars) becomes one step; plain status strings (e.g.
+    "Initializing...") are kept as `status` steps and the final `result` event
+    contributes its usage/cost summary.
+    """
+    trace = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        message = event.get("message")
+        if isinstance(message, str):
+            trace.append({"type": "status", "text": message})
+            continue
+        if event.get("type") == "result":
+            trace.append({"type": "result", "usage": event.get("usage")})
+            continue
+        blocks = message.get("content") if isinstance(message, dict) else None
+        for block in blocks if isinstance(blocks, list) else []:
+            kind = block.get("type")
+            if kind == "text":
+                trace.append({"type": "text", "text": block.get("text")})
+            elif kind == "tool_use":
+                trace.append({
+                    "type": "tool_call",
+                    "id": block.get("id"),
+                    "tool": block.get("name"),
+                    "input": block.get("input"),
+                })
+            elif kind == "tool_result":
+                trace.append({
+                    "type": "tool_result",
+                    "toolUseId": block.get("tool_use_id"),
+                    "isError": bool(block.get("is_error")),
+                    "content": truncate(_tool_result_text(block), result_limit),
+                })
+    return trace
+
+
 def command_messages(args):
     messages = api_get("/brain/activities/%d/messages" % args.activity_id)
     if args.role:
         messages = [m for m in messages if m.get("role") == args.role]
+    if args.message_id:
+        messages = [m for m in messages if m.get("id") == args.message_id]
     content_limit = 1_000_000 if args.full else 4000
-    emit([summarize_message(message, content_limit) for message in messages])
+    output = []
+    for message in messages:
+        summary = summarize_message(message, content_limit)
+        execution_id = message.get("executionActivityId")
+        summary["executionActivityId"] = execution_id
+        # A user message and its reply share one execution run; attach it once.
+        if args.logs and execution_id and message.get("role") == "assistant":
+            events = fetch_execution_logs(execution_id)
+            summary["agentLogs"] = (
+                events if args.raw_logs
+                else summarize_log_events(events, 1_000_000 if args.full else 500)
+            )
+        output.append(summary)
+    emit(output)
 
 
 def command_activity(args):
@@ -660,7 +741,22 @@ def build_parser():
         "--role", choices=["user", "assistant", "system"],
         help="Only messages with this role",
     )
-    add_full_flag(messages_parser, "Print full message content (no truncation)")
+    messages_parser.add_argument(
+        "--message-id", type=int, help="Only the message with this id",
+    )
+    messages_parser.add_argument(
+        "--logs", action="store_true",
+        help="Attach each message's agent execution logs (tool calls, inputs, "
+        "results) as `agentLogs`",
+    )
+    messages_parser.add_argument(
+        "--raw-logs", action="store_true",
+        help="With --logs, attach the raw log events instead of the condensed trace",
+    )
+    add_full_flag(
+        messages_parser,
+        "Print full message content and tool results (no truncation)",
+    )
     messages_parser.set_defaults(handler=command_messages)
     activity_parser = subparsers.add_parser(
         "activity", help="Get one activity's details"
