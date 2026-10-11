@@ -1,6 +1,6 @@
 ---
 name: zendesk
-description: This skill enables interaction with the Zendesk Support REST API v2 for ticket and customer management. Use when the user wants to list, read, search, create, or update Zendesk tickets, read a ticket's conversation, post a public reply or internal note on a ticket, change ticket status/priority/assignee/tags, or look up and manage Zendesk users, organizations, and agent groups. Trigger this whenever the user mentions Zendesk, a support ticket, a ticket number, replying to a customer, ticket status/priority/assignee, an end-user or requester, a support organization, or agent groups — even if they don't name the API explicitly. For finding tickets or users across the whole account, prefer this skill's search over paging through lists one by one. This skill is non-destructive — it never deletes tickets, users, organizations, or groups — and it runs read-only by default, refusing every create/update/comment command unless ZENDESK_READ_ONLY is set to 0.
+description: This skill enables interaction with the Zendesk Support REST API v2 for ticket and customer management. Use when the user wants to list, read, search, create, or update Zendesk tickets, read a ticket's conversation, post a public reply or internal note on a ticket, change ticket status/priority/assignee/tags, or look up and manage Zendesk users, organizations, and agent groups. Trigger this whenever the user mentions Zendesk, a support ticket, a ticket number, replying to a customer, ticket status/priority/assignee, an end-user or requester, a support organization, or agent groups — even if they don't name the API explicitly. For finding tickets or users across the whole account, prefer this skill's search over paging through lists one by one. It also produces a side-conversation analytics report (daily volume, open-to-close resolution time, ping-pong round-trips, and topic breakdown) as html, csv, md, and json — use it whenever someone wants to analyze side conversations routed from one group to another (e.g. support to KYC). This skill is non-destructive — it never deletes tickets, users, organizations, or groups — and it runs read-only by default, refusing every create/update/comment command unless ZENDESK_READ_ONLY is set to 0.
 ---
 
 # Zendesk Support
@@ -317,6 +317,64 @@ You rarely need a separate lookup step. Pass the email or name straight to
 `--assignee`, `--requester`, `--user`, `--group`, or `--organization` and let
 the script resolve it. Only fall back to an explicit id when a name is ambiguous
 (the error lists the candidates).
+
+## Side-conversation report
+
+`scripts/side-conversation-report.py` is a second, self-contained CLI for
+**analytics on side conversations**. In Zendesk, when an agent opens a side
+conversation from a parent ticket and routes it *to a group*, Zendesk creates a
+child ticket in that group with `via.channel = "side_conversation"`. This tool
+finds those child tickets over a date range and answers four questions:
+
+1. **Volume** — how many are opened per day (calendar / working / active day).
+2. **Resolution time** — open → close in hours (mean / median / p90), from
+   Ticket Metrics `full_resolution_time`.
+3. **Ping-pong** — message round-trips per conversation (1 ping-pong = 2
+   comments), with the single-round-trip rate and participant count.
+4. **Topics** — keyword classification (provider connection, KYC/verification,
+   document approval, underwriting/risk, …), fully tunable via `--topics`.
+
+It reuses `zendesk_api.py`'s auth/transport (same three env vars) and is
+**read-only** — it never writes to Zendesk. Output is any of html / csv / md /
+json written into a report directory.
+
+```bash
+# Full-year report into .artifacts/side-conversation-report/report.{html,csv,md,json}
+python3 scripts/side-conversation-report.py \
+  --start-date 2026-01-01 --end-date 2026-12-31 \
+  --group "KYC Support" \
+  --report .artifacts/side-conversation-report
+
+# Hebrew (RTL) labels, Israel work-week, bucket days in local time, HTML + CSV only
+python3 scripts/side-conversation-report.py \
+  --start-date 2026-07-01 --end-date 2026-10-11 \
+  --group "KYC Support" --hebrew \
+  --timezone Asia/Jerusalem --weekend fri,sat \
+  --formats html,csv
+
+# Fast pass (skip per-ticket comment fetch; approximate ping-pong + subject-only topics)
+python3 scripts/side-conversation-report.py \
+  --start-date 2026-01-01 --group "Tier 2" --no-comments
+
+# Preview the Zendesk search queries without calling the API
+python3 scripts/side-conversation-report.py \
+  --start-date 2026-01-01 --end-date 2026-12-31 --group "KYC Support" --print-query
+```
+
+Key options: `--group` (target group, default `KYC Support`), `--channel`
+(default `side_conversation`), `--date-field created|updated|solved`,
+`--formats`, `--basename`, `--topics PATH`, `--weekend` (days treated as weekend
+for the working-day average, default `fri,sat`), `--timezone` (IANA, for day
+bucketing), `--no-comments` (fast approximation), `--max-workers`, `--limit`,
+`--hebrew`, and `--note` (repeatable report caveat). A machine-readable summary
+is printed to stdout; the queries and progress go to stderr.
+
+The range is auto-chunked by month so each underlying Search query stays under
+Zendesk's 1000-result cap. The topic taxonomy lives in `scripts/topics.json`
+(bilingual Hebrew/English keywords, priority-ordered — the first matching
+category wins); copy and edit it, then pass `--topics your-topics.json`. The
+HTML is a self-contained, offline, light/dark dashboard rendered from
+`scripts/report_templates/report.html.tmpl`.
 
 ## Error Handling
 
