@@ -1,0 +1,59 @@
+{
+  "description": "Ordered topic taxonomy for classifying side-conversation tickets. The first category whose any keyword matches the ticket subject + first comment body wins (priority order top-to-bottom). Keywords are matched case-insensitively as substrings; Hebrew and English are both supported. Anything that matches nothing falls into the implicit 'other' bucket. Tune this file to your own team's vocabulary and pass it with --topics.",
+  "categories": [
+    {
+      "key": "provider_connection",
+      "label": "Provider connection",
+      "label_he": "חיבור ספקים / סולקים",
+      "keywords": ["provider", "acquirer", "acquiring", "psp", "connect", "connection", "integration", "gateway", "ספק", "ספקים", "סולק", "סולקים", "חיבור", "לחבר", "אינטגרציה", "שער סליקה"]
+    },
+    {
+      "key": "verification_kyc",
+      "label": "Verification / KYC",
+      "label_he": "אימות זהות / KYC",
+      "keywords": ["kyc", "kyb", "verify", "verification", "identity", "identification", "aml", "due diligence", "אימות", "זהות", "תעודת זהות", "ת.ז", "ת\"ז", "הזדהות", "זיהוי"]
+    },
+    {
+      "key": "document_approval",
+      "label": "Document approval",
+      "label_he": "אישור מסמכים",
+      "keywords": ["document", "documents", "doc", "docs", "upload", "attachment", "certificate", "incorporation", "מסמך", "מסמכים", "אישור מסמך", "העלאת מסמך", "תעודה", "חוזה", "הסכם", "אסמכתא"]
+    },
+    {
+      "key": "underwriting_risk",
+      "label": "Underwriting / risk",
+      "label_he": "תהליך חיתום / סיכון",
+      "keywords": ["underwriting", "underwrite", "risk", "risk review", "approval process", "חיתום", "סיכון", "הערכת סיכון", "ועדת אשראי", "תהליך חיתום", "מחתם"]
+    },
+    {
+      "key": "merchant_details_update",
+      "label": "Merchant details update",
+      "label_he": "עדכון פרטי עסק / דסקריפטור / שם",
+      "keywords": ["descriptor", "merchant name", "business name", "trade name", "signatory", "beneficial owner", "update details", "change name", "דסקריפטור", "שם עסק", "שם העסק", "פרטי עסק", "מורשה חתימה", "מורשי חתימה", "בעל שליטה", "עדכון פרטים", "שינוי שם"]
+    },
+    {
+      "key": "clearing_scope_fx",
+      "label": "Clearing scope / FX",
+      "label_he": "היקף סליקה / מט\"ח / כרטיסים",
+      "keywords": ["clearing scope", "volume", "turnover", "fx", "foreign currency", "currencies", "card types", "amex", "diners", "היקף סליקה", "מחזור", "מט\"ח", "מטח", "מטבע", "מטבעות", "כרטיסים", "סוגי כרטיסים", "אמקס", "דיינרס"]
+    },
+    {
+      "key": "bank_account",
+      "label": "Bank account",
+      "label_he": "חשבון בנק",
+      "keywords": ["bank account", "bank details", "iban", "swift", "account number", "חשבון בנק", "פרטי בנק", "מספר חשבון", "סניף", "בנק"]
+    },
+    {
+      "key": "account_freeze_status",
+      "label": "Account freeze / status",
+      "label_he": "הקפאה / חסימה / סטטוס חשבון",
+      "keywords": ["freeze", "frozen", "block", "blocked", "suspend", "suspended", "hold", "on hold", "disable", "status", "הקפאה", "הקפא", "חסימה", "חסום", "השהיה", "השעיה", "סטטוס חשבון", "חסימת חשבון"]
+    },
+    {
+      "key": "discounting_credit",
+      "label": "Discounting / credit",
+      "label_he": "ניכיון / זיכוי",
+      "keywords": ["discount", "discounting", "credit", "advance", "factoring", "ניכיון", "זיכוי", "אשראי", "מקדמה", "פקטורינג"]
+    }
+  ]
+}
