@@ -1,0 +1,17 @@
+{
+  "skill_name": "kibana-dashboards",
+  "evals": [
+    {"id": 1, "name": "osd-new-dashboard",
+     "prompt": "I want a dashboard for the paymeng-flatten-transactions index in our OpenSearch (it's at $KIBANA_URL, creds in env). Put it in my PRIVATE tenant with id {ID}. Overview of transaction volume and amounts over the last 30 days, breakdowns by the important categories, and a few filter dropdowns. Give me the link when it's done.",
+     "expected_output": "A dashboard saved in the private tenant that renders (index pattern with fields, valid visStates), sensible metrics/trends/breakdowns from real fields, controls, a 30d time range, and the correct tenant URL.",
+     "files": []},
+    {"id": 2, "name": "osd-inspect-empty-panels",
+     "prompt": "Look at the dashboard zz-skill-test-charges in my private OpenSearch tenant. List its panels and tell me which ones would show no data if someone looks at only the last 1 hour, with the actual numbers for the ones that do have data.",
+     "expected_output": "An outline of the 13 panels and, per data panel, the real value/bucket count over the last 1h (or an explicit empty flag).",
+     "files": []},
+    {"id": 3, "name": "kibana-esql-offline",
+     "prompt": "We're moving to Elastic Cloud (Kibana 9.5). Write me the Kibana Dashboards API body for an ES|QL dashboard over logs-nginx-* (fields: @timestamp, http.response.status_code, url.path, host.name, http.response.body.bytes, event.duration which is in nanoseconds). I want KPIs, requests over time by status code, top paths, bytes by host, and filter controls. Save it as dashboard.json. There's no cluster to deploy to yet.",
+     "expected_output": "A valid Kibana 9.4+ dashboard body: flat title/description/panels, ES|QL panels with matching column refs, temporal x axis with ?_tstart/?_tend, legend visible on the status-code split, hidden axis titles, bytes/duration(ns) formats, no title on metrics, gap-free 48-col grid, ES|QL-sourced controls (9.5).",
+     "files": []}
+  ]
+}

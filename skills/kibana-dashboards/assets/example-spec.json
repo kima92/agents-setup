@@ -1,0 +1,91 @@
+{
+  "id": "web-traffic",
+  "title": "Web traffic overview",
+  "description": "Request volume, response sizes and client reach, by response code, host and country.",
+  "index": "logs-*",
+  "time_field": "@timestamp",
+  "time_range": "7d",
+  "controls": [
+    "response.keyword",
+    "machine.os.keyword",
+    "geo.dest"
+  ],
+  "sections": [
+    {
+      "title": "Key metrics",
+      "panels": [
+        {
+          "chart": "metric",
+          "metric": "count",
+          "label": "Requests"
+        },
+        {
+          "chart": "metric",
+          "metric": "avg:bytes",
+          "label": "Avg response size"
+        },
+        {
+          "chart": "metric",
+          "metric": "unique:clientip",
+          "label": "Unique clients"
+        },
+        {
+          "chart": "metric",
+          "metric": "p95:latency_ms",
+          "label": "P95 latency"
+        }
+      ]
+    },
+    {
+      "title": "Trends",
+      "panels": [
+        {
+          "chart": "area",
+          "title": "Requests over time",
+          "metric": "count",
+          "wide": true,
+          "legend_stats": [
+            "avg",
+            "min",
+            "max"
+          ]
+        },
+        {
+          "chart": "line",
+          "title": "Requests by response code over time",
+          "metric": "count",
+          "split": "response.keyword",
+          "size": 5
+        }
+      ]
+    },
+    {
+      "title": "Breakdowns",
+      "panels": [
+        {
+          "chart": "bar_horizontal",
+          "title": "Requests by host",
+          "metric": "count",
+          "x": "host.keyword"
+        },
+        {
+          "chart": "donut",
+          "title": "Share by OS",
+          "metric": "count",
+          "by": "machine.os.keyword",
+          "size": 6
+        },
+        {
+          "chart": "table",
+          "title": "Top URLs",
+          "metrics": [
+            "count",
+            "sum:bytes"
+          ],
+          "by": "url.keyword",
+          "size": 15
+        }
+      ]
+    }
+  ]
+}
