@@ -1,7 +1,7 @@
 ---
 name: kibana-dashboards
 description: Build, edit, check and manage dashboards and visualizations on Kibana 9.4+ and OpenSearch Dashboards (incl. AWS OpenSearch Service /_dashboards) with a self-contained Python CLI (stdlib only, no `elastic` CLI). The backend is auto-detected from KIBANA_URL. You write a short backend-neutral spec; the script profiles the index, compiles Lens / visState JSON with the design defaults, packs the 48-column grid, runs every panel's query against the real data, backs up what it overwrites, writes, and reads it back. Use whenever the user wants to create, redesign, fix, copy, inspect or list a Kibana or OpenSearch dashboard, visualization, Lens chart, data view / index pattern, or dashboard controls — e.g. "make a dashboard for the charges index", "add a p95 latency panel to the ops dashboard", "why is this panel empty", "move my dashboard from the private tenant to global", "what's on dashboard X", "chart errors by service over the last week in Kibana". Trigger it too for "visualize this index", "build a KPI board in OpenSearch", or ES|QL-backed Kibana panels, even if the user never says "API". Read-only by default; writes need KIBANA_READ_ONLY=0.
-compatibility: Python 3.8+ (stdlib only). Kibana 9.4+ (Dashboards/Visualizations APIs) or OpenSearch Dashboards 1.x–3.x. Network access to the Kibana/OSD URL.
+compatibility: Python 3.8+ (stdlib only). Kibana 9.4+ (Dashboards/Visualizations APIs), Kibana 7.x/8.x (classic saved objects) or OpenSearch Dashboards 1.x–3.x. Network access to the Kibana/OSD URL.
 metadata:
   based_on: elastic/agent-skills kibana-dashboards 0.4.0 (Apache-2.0)
 ---
@@ -14,17 +14,22 @@ the rest: profiling fields, writing native JSON, grid math, design defaults, que
 
 It works on both backends and detects which one KIBANA_URL is:
 
-| | Kibana 9.4+ | OpenSearch Dashboards |
-|---|---|---|
-| Writes | `/api/dashboards`, `/api/visualizations` (Lens) | saved objects: index-pattern, visualization, dashboard |
-| Queries | ES\|QL | PPL / SQL / DSL |
-| Scoping | `--space` | `--tenant private|global|<name>` |
+| | Kibana 9.4+ | Kibana < 9.4 (7.x/8.x) | OpenSearch Dashboards |
+|---|---|---|---|
+| Writes | `/api/dashboards`, `/api/visualizations` (Lens) | classic saved objects, as OSD | saved objects: index-pattern, visualization, dashboard |
+| Queries | ES\|QL | SQL / DSL (ES\|QL from 8.11) | PPL / SQL / DSL |
+| Scoping | `--space` | `--space` | `--tenant private|global|<name>` |
+
+Kibana below 9.4 has no Dashboards API, so the script writes the same classic visualizations it writes for OSD
+(`status` says so). Existing Lens panels there show up in `get` as `lens:<type>` but are not decoded or validated.
 
 ## Setup
 
 ```bash
 export KIBANA_URL="https://kibana.example.com"   # an AWS OpenSearch domain endpoint works as-is
 export KIBANA_API_KEY="..."                       # or KIBANA_USERNAME + KIBANA_PASSWORD
+# behind a reverse proxy with its own basic auth (nginx): KIBANA_NGINX_USERNAME + KIBANA_NGINX_PASSWORD,
+# and the app login as KIBANA_USERNAME + KIBANA_PASSWORD (the script logs in for a session cookie)
 # optional: ELASTICSEARCH_URL / OPENSEARCH_URL, KIBANA_SPACE, KIBANA_TENANT, KIBANA_INSECURE=1
 ```
 
@@ -176,7 +181,8 @@ Read [references/opensearch-dashboards.md](references/opensearch-dashboards.md) 
 | `validate` says `EMPTY` | No docs in the range. Check the span from `discover` and set `time_range` (or `--since` to test) |
 | OSD panel: "Could not locate that index-pattern-field" | Index pattern has a stale or empty field list. Re-run `apply`, which refreshes it |
 | OSD "Could not locate that dashboard" | Wrong tenant. Use `--tenant` and the URL `apply` prints |
-| Kibana 404 on `/api/dashboards` | Kibana < 9.4, or wrong space |
+| Kibana 404 on `/api/dashboards` | Wrong space (Kibana < 9.4 is detected and uses saved objects) |
+| "The proxy rejected KIBANA_NGINX_USERNAME/PASSWORD" | nginx basic-auth credentials are wrong or unset; 401 with no `kbn-name` header comes from the proxy |
 | 400 on a Kibana write | Run `lint` on the compiled body (`build -o`). Column/operation mismatches and color steps are the usual causes |
 | Multi-series chart without a legend | Lint error on native bodies; the spec compiler sets it for you |
 | `read-only mode is on` | Expected. Ask the user, then re-run with `KIBANA_READ_ONLY=0` |

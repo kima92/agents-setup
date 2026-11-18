@@ -1,7 +1,8 @@
 # Kibana & OpenSearch Dashboards skill
 
 A self-contained Python CLI (stdlib only) for building and managing dashboards on
-**Kibana 9.4+** and **OpenSearch Dashboards** (including AWS OpenSearch Service),
+**Kibana 9.4+**, older **Kibana 7.x/8.x** (classic saved objects) and **OpenSearch Dashboards**
+(including AWS OpenSearch Service),
 packaged as a Claude skill. The backend is detected automatically from `KIBANA_URL`.
 
 It is a standalone port of Elastic's
@@ -45,6 +46,8 @@ export KIBANA_API_KEY="..."                          # or KIBANA_USERNAME / KIBA
 export ELASTICSEARCH_URL="https://es.example.com"    # data endpoint; default: KIBANA_URL root or the console proxy
 export KIBANA_SPACE="team-a"                         # Kibana space
 export KIBANA_TENANT="private"                       # OpenSearch tenant
+export KIBANA_NGINX_USERNAME="..."                   # reverse-proxy basic auth in front of Kibana;
+export KIBANA_NGINX_PASSWORD="..."                   #   then KIBANA_USERNAME/PASSWORD log in via session
 export KIBANA_READ_ONLY=0                            # allow writes
 ```
 
@@ -64,5 +67,8 @@ KIBANA_READ_ONLY=0 python3 scripts/kibana_dashboards.py apply my-dash.json
 - OpenSearch Dashboards 3.5 on AWS OpenSearch 2.19: `status`, `discover`, `validate`,
   `apply` (create, update, index-pattern creation and field repair), `get`, `list`, and
   `delete`, checked live in a private tenant. Rendering was verified in a browser.
+- Kibana 7.17 behind nginx basic auth: `status`, `list`, `get` (incl. Lens panels), `discover`,
+  `query` (SQL), `validate --id`, and `apply` (create and update, with backup), checked live.
+  Rendering was verified in a browser.
 - Kibana 9.4+: the compiler output is checked offline against Elastic's reference
   dashboards in `assets/`. Not yet exercised against a live Kibana.

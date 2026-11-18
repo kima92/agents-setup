@@ -8,6 +8,7 @@ either backend, auto-detected from KIBANA_URL:
   * Kibana 9.4+          -> Dashboards / Visualizations APIs (Lens configs, ES|QL)
   * OpenSearch Dashboards -> saved-objects API (index-pattern, visualization with
                              visState, dashboard with panelsJSON)
+  * Kibana < 9.4 (7.x/8.x) -> the same classic saved objects (no Dashboards API)
 
 It is deliberately more than an HTTP facade. The expensive parts of building a
 dashboard are done here once, deterministically, instead of by the model on
@@ -38,6 +39,11 @@ Environment:
                         is accepted as an alias.
     KIBANA_USERNAME / KIBANA_PASSWORD
                         Basic auth, used when no API key is set.
+    KIBANA_NGINX_USERNAME / KIBANA_NGINX_PASSWORD
+                        Basic auth of a reverse proxy (nginx auth_basic) in front
+                        of Kibana/OSD. The proxy then owns the Authorization
+                        header, so the app login goes through a session login
+                        with KIBANA_USERNAME / KIBANA_PASSWORD (no API key).
 Optional:
     ELASTICSEARCH_URL / OPENSEARCH_URL
                         Data endpoint for queries. When unset, the KIBANA_URL
@@ -291,6 +297,14 @@ def _ssl_context():
     return None
 
 
+class _Headers(dict):
+    """Response headers as a dict; `_all` keeps repeated ones (Set-Cookie)."""
+
+    def __init__(self, msg):
+        super().__init__(dict(msg or {}))
+        self._all = list(msg.items()) if msg is not None else []
+
+
 def http(method, url, headers=None, body=None, timeout=None):
     """Return (status, text, response_headers). Never raises on HTTP status."""
     data = None
@@ -300,9 +314,9 @@ def http(method, url, headers=None, body=None, timeout=None):
     timeout = timeout or float(os.environ.get("KIBANA_TIMEOUT", "60"))
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
-            return resp.getcode(), resp.read().decode("utf-8", "replace"), dict(resp.headers)
+            return resp.getcode(), resp.read().decode("utf-8", "replace"), _Headers(resp.headers)
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers or {})
+        return e.code, e.read().decode("utf-8", "replace"), _Headers(e.headers)
     except urllib.error.URLError as e:
         raise ApiError("Cannot reach {}: {}. Check KIBANA_URL, VPN/network access and TLS "
                        "(KIBANA_INSECURE=1 for self-signed certs).".format(
@@ -310,6 +324,10 @@ def http(method, url, headers=None, body=None, timeout=None):
     except TimeoutError:
         raise ApiError("Request to {} timed out after {}s (KIBANA_TIMEOUT).".format(
             urllib.parse.urlsplit(url).path, timeout))
+
+
+def hdrs_kbn(hdrs):
+    return any(k.lower() in ("kbn-name", "osd-name") for k in (hdrs or {}))
 
 
 def _err_text(text):
@@ -342,7 +360,19 @@ class Client:
         self.space = space if space is not None else os.environ.get("KIBANA_SPACE") or None
         t = tenant if tenant is not None else os.environ.get("KIBANA_TENANT") or None
         self.tenant = {"private": "__user__", "global": "global"}.get(t, t) if t else None
-        self.auth = self._auth_header()
+        # A reverse proxy with its own basic auth (nginx auth_basic) owns the Authorization header,
+        # so the app credentials go through a session login (cookie) instead.
+        pu, pp = os.environ.get("KIBANA_NGINX_USERNAME"), os.environ.get("KIBANA_NGINX_PASSWORD")
+        self.proxy_auth = ("Basic " + base64.b64encode("{}:{}".format(pu, pp).encode()).decode()) if pu and pp else None
+        self.cookie = None
+        if self.proxy_auth:
+            if not (os.environ.get("KIBANA_USERNAME") and os.environ.get("KIBANA_PASSWORD")):
+                raise UsageError("KIBANA_NGINX_USERNAME/PASSWORD is set, so the app login must be "
+                                 "KIBANA_USERNAME and KIBANA_PASSWORD (an API key cannot share the "
+                                 "Authorization header with the proxy).")
+            self.auth = self.proxy_auth
+        else:
+            self.auth = self._auth_header()
         self.info = None
 
     @staticmethod
@@ -358,6 +388,46 @@ class Client:
             return "Basic " + base64.b64encode("{}:{}".format(user, pw).encode()).decode()
         raise UsageError("No credentials: set KIBANA_API_KEY (or ELASTIC_API_KEY), or "
                          "KIBANA_USERNAME and KIBANA_PASSWORD.")
+
+    def _base_headers(self):
+        h = {"Authorization": self.auth}
+        if self.cookie:
+            h["Cookie"] = self.cookie
+        return h
+
+    def _login(self, base):
+        """Session login behind a proxy: Kibana's /internal/security/login, else OSD's /auth/login."""
+        user, pw = os.environ["KIBANA_USERNAME"], os.environ["KIBANA_PASSWORD"]
+        attempts = [
+            ("/internal/security/login", {"providerType": "basic", "providerName": "basic",
+                                          "currentURL": base + "/login",
+                                          "params": {"username": user, "password": pw}}),
+            ("/internal/security/login", {"username": user, "password": pw}),
+            ("/auth/login", {"username": user, "password": pw}),
+        ]
+        best = None  # the most telling failure: an app-level answer beats a 404 from a wrong endpoint
+        for path, body in attempts:
+            st, text, hdrs = http("POST", base + path, {
+                "Authorization": self.proxy_auth, "kbn-xsrf": "true", "osd-xsrf": "true",
+                "Content-Type": "application/json"}, json.dumps(body))
+            if st == 401 and not hdrs_kbn(hdrs):
+                raise ApiError("The proxy (nginx) rejected KIBANA_NGINX_USERNAME/PASSWORD (401).", 401)
+            if st in (200, 204):
+                cookies = [v.split(";", 1)[0] for k, v in hdrs._all if k.lower() == "set-cookie"]
+                if cookies:
+                    self.cookie = "; ".join(cookies)
+                    return
+            if best is None or (best[1] == 404 and st != 404):
+                best = (path, st, text)
+            if st in (401, 403) and hdrs_kbn(hdrs):
+                break  # the app answered: the credentials are wrong, not the endpoint
+        path, st, text = best
+        raise ApiError("Login as KIBANA_USERNAME failed at {} ({}): {}{}".format(
+            path, st, _err_text(text), " -- check KIBANA_USERNAME/PASSWORD" if st in (400, 401, 403) else ""), st)
+
+    def _ensure_session(self):
+        if self.proxy_auth and not self.cookie:
+            self._login(self.detect()["base"])
 
     # -- detection --
 
@@ -381,6 +451,10 @@ class Client:
 
     def _probe(self):
         base_headers = {"Authorization": self.auth}
+        if self.proxy_auth:
+            if not self.cookie:
+                self._login(self.url)
+            base_headers = self._base_headers()
         cluster = None
         st, text, _ = http("GET", self.url + "/", base_headers)
         if st == 200:
@@ -398,6 +472,8 @@ class Client:
             st, text, hdrs = http("GET", base + "/api/status", base_headers)
             last = (st, text)
             if st in (401, 403):
+                if self.proxy_auth and not hdrs_kbn(hdrs):
+                    raise ApiError("The proxy rejected KIBANA_NGINX_USERNAME/PASSWORD ({}).".format(st), st)
                 raise ApiError("Authentication failed at {} ({}): {}".format(
                     base + "/api/status", st, _err_text(text)), st)
             if st != 200:
@@ -409,7 +485,12 @@ class Client:
             ver = (j.get("version") or {}).get("number")
             lower_headers = {k.lower(): v for k, v in hdrs.items()}
             is_osd = ("osd-name" in lower_headers or "opensearch" in text[:4000].lower())
-            info = {"backend": "osd" if is_osd else "kibana", "version": ver, "base": base,
+            # Kibana below 9.4 has no Dashboards API; it stores dashboards as classic saved objects
+            # (visState / panelsJSON), the same format OSD forked from Kibana 7.10, so it takes the
+            # saved-object path. info["product"] keeps what it really is (URLs, spaces, query languages).
+            classic = is_osd or version_tuple(ver) < (9, 4, 0)
+            info = {"backend": "osd" if classic else "kibana", "version": ver, "base": base,
+                    "product": "opensearch" if is_osd else "kibana",
                     "flavor": (j.get("version") or {}).get("build_flavor")}
             if os.environ.get("ELASTICSEARCH_URL") or os.environ.get("OPENSEARCH_URL"):
                 info["data"] = (os.environ.get("ELASTICSEARCH_URL") or os.environ["OPENSEARCH_URL"]).rstrip("/")
@@ -431,6 +512,17 @@ class Client:
     def backend(self):
         return self.detect()["backend"]
 
+    def scope(self):
+        """'space X' on Kibana, 'tenant X' on OSD -- for messages."""
+        if self.product == "kibana":
+            return "space " + (self.space or "default")
+        return "tenant " + ({"__user__": "private"}.get(self.tenant, self.tenant) or "default")
+
+    @property
+    def product(self):
+        info = self.detect()
+        return info.get("product") or ("opensearch" if info["backend"] == "osd" else "kibana")
+
     @property
     def version(self):
         return version_tuple(self.detect().get("version"))
@@ -438,18 +530,21 @@ class Client:
     # -- dashboards app --
 
     def _app_headers(self, extra=None):
+        self._ensure_session()
         h = {"Authorization": self.auth, "kbn-xsrf": "true", "osd-xsrf": "true",
              "Content-Type": "application/json"}
+        if self.cookie:
+            h["Cookie"] = self.cookie
         if self.backend == "kibana":
             h["Elastic-Api-Version"] = "2023-10-31"
-        if self.backend == "osd" and self.tenant:
+        if self.product == "opensearch" and self.tenant:
             h["securitytenant"] = self.tenant
         h.update(extra or {})
         return h
 
     def app(self, method, path, body=None, params=None, ok=(200, 201), raw=False, headers=None):
         info = self.detect()
-        prefix = "/s/" + self.space if (self.space and info["backend"] == "kibana" and self.space != "default") else ""
+        prefix = "/s/" + self.space if (self.space and self.product == "kibana" and self.space != "default") else ""
         url = info["base"] + prefix + path
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params, doseq=True)
@@ -460,7 +555,13 @@ class Client:
             hint = ""
             if st == 404 and "/api/dashboards" in path and info["backend"] == "kibana":
                 hint = " (Kibana < 9.4 has no Dashboards API, or the id/space is wrong)"
-            if st == 403 and info["backend"] == "osd":
+            if st == 401 and self.proxy_auth and self.cookie:
+                self.cookie = None  # session expired: log in again once
+                self._ensure_session()
+                st, text, _ = http(method, url, self._app_headers(headers), body)
+                if st in ok:
+                    return text if raw else (json.loads(text) if text.strip() else {})
+            if st == 403 and self.product == "opensearch":
                 hint = " (check the user's role in tenant {!r})".format(self.tenant or "default")
             raise ApiError("{} {} -> {}: {}{}".format(method, prefix + path, st, _err_text(text), hint), st)
         if raw:
@@ -482,6 +583,9 @@ class Client:
         if info["data_mode"] == "direct":
             url = info["data"] + path
             headers = {"Authorization": self.auth, "Content-Type": ctype}
+            if self.proxy_auth and info["data"].startswith(info["base"]):
+                self._ensure_session()
+                headers["Cookie"] = self.cookie
         else:
             url = info["data"] + "/api/console/proxy?" + urllib.parse.urlencode(
                 {"path": path, "method": method})
@@ -494,8 +598,11 @@ class Client:
 
     def view_url(self, kind, oid):
         info = self.detect()
-        if info["backend"] == "kibana":
+        if self.product == "kibana":
             prefix = "/s/" + self.space if self.space and self.space != "default" else ""
+            if info["backend"] == "osd":  # classic saved objects on Kibana < 9.4
+                app = "dashboards#/view/" if kind == "dashboard" else "visualize#/edit/"
+                return info["base"] + prefix + "/app/" + app + urllib.parse.quote(oid, safe="")
             app = "dashboards#/view/" if kind == "dashboard" else "lens#/edit/"
             return info["base"] + prefix + "/app/" + app + oid
         tenant = {"__user__": "private", "": "global"}.get(self.tenant, self.tenant)
@@ -636,6 +743,13 @@ def is_spec(doc):
         items += s.get("panels") or []
     return any(isinstance(p, dict) and "chart" in p for p in items) or (
         "sections" in doc and not doc.get("panels"))
+
+
+def panel_ref(refs, panel):
+    """A panel's reference. OSD/Kibana 7.10 names it `panelRefName`; Kibana 7.13+ prefixes the
+    panel index (`<panelIndex>:panel_<panelIndex>`)."""
+    name = panel.get("panelRefName")
+    return refs.get(name) or refs.get("{}:{}".format(panel.get("panelIndex"), name))
 
 
 def is_osd_bundle(doc):
@@ -1321,7 +1435,10 @@ def _o_xy_params(p, chart, metric_aggs, multi):
         "grid": {"categoryLines": False, "valueAxis": "ValueAxis-1" if not horizontal else None},
         "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": cat_pos, "show": True,
                           "style": {}, "scale": {"type": "linear"},
-                          "labels": {"show": True, "filter": True, "truncate": 100}, "title": {"text": ""}}],
+                          # horizontal bars: flat, unfiltered names (vislib rotates and drops every other one)
+                          "labels": ({"show": True, "rotate": 0, "filter": False, "truncate": 200} if horizontal
+                                     else {"show": True, "filter": True, "truncate": 100}),
+                          "title": {"text": ""}}],
         "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1" if not horizontal else "BottomAxis-1",
                        "type": "value", "position": val_pos, "show": True, "style": {},
                        "scale": {"type": "linear", "mode": "percentage" if chart.endswith("_percentage") else "normal"},
@@ -1816,7 +1933,7 @@ def lint_osd_bundle(bundle, problems):
     refs = {r["name"]: r for r in d.get("references") or []}
     items = []
     for p in panels or []:
-        r = refs.get(p.get("panelRefName"))
+        r = panel_ref(refs, p)
         vtype = None
         if r and r["id"] in vis:
             vs = vis[r["id"]]["attributes"].get("visState")
@@ -2116,7 +2233,7 @@ def outline_kibana(body, out=print):
 
 def outline_osd(bundle, out=print):
     d = bundle.get("dashboard")
-    vis = {v["id"]: osd_decode(v) for v in bundle.get("visualizations") or []}
+    vis = {v["id"]: (v if v.get("missing") else osd_decode(v)) for v in bundle.get("visualizations") or []}
     if not d:
         for v in vis.values():
             out("visualization {} {}".format(v["id"], v["attributes"].get("title")))
@@ -2131,10 +2248,19 @@ def outline_osd(bundle, out=print):
     refs = {r["name"]: r for r in d.get("references") or []}
     for p in a.get("panelsJSON") or []:
         g = p.get("gridData") or {}
-        r = refs.get(p.get("panelRefName")) or {}
+        r = panel_ref(refs, p) or {}
         v = vis.get(r.get("id"))
         desc, vt, title = "", r.get("type", "?"), p.get("title") or ""
-        if v:
+        lens = (p.get("embeddableConfig") or {}).get("attributes") if p.get("type") == "lens" else None
+        if lens is None and v and v.get("type") == "lens":
+            lens = v.get("attributes") or {}
+        if v and v.get("missing"):
+            desc = "MISSING {} {}".format(r.get("type"), r.get("id"))
+        elif lens is not None:
+            vt = "lens:" + str(lens.get("visualizationType") or "?").replace("lns", "").lower()
+            title = title or (p.get("embeddableConfig") or {}).get("title") or lens.get("title") or ""
+            desc = "(Lens: not decoded; open it in Kibana to edit)"
+        elif v:
             vs = v["attributes"].get("visState") or {}
             vt = vs.get("type")
             title = title or v["attributes"].get("title")
@@ -2191,7 +2317,7 @@ def fetch_osd_bundle(client, oid, kind="dashboard"):
         raise
     if kind != "dashboard":
         return {"kind": "osd_bundle", "dashboard": None, "visualizations": [osd_decode(d)]}
-    refs = [r for r in d.get("references") or [] if r.get("type") in ("visualization", "search")]
+    refs = [r for r in d.get("references") or [] if r.get("type") in ("visualization", "search", "lens")]
     vis = []
     if refs:
         got = client.app("POST", "/api/saved_objects/_bulk_get",
@@ -2210,8 +2336,13 @@ def fetch_osd_bundle(client, oid, kind="dashboard"):
 def cmd_status(client, args):
     info = client.detect(refresh=True)
     v = version_tuple(info.get("version"))
-    print("backend:   {} {}".format("Kibana" if info["backend"] == "kibana" else "OpenSearch Dashboards",
-                                    info.get("version")))
+    product = client.product
+    print("backend:   {} {}{}".format("Kibana" if product == "kibana" else "OpenSearch Dashboards",
+                                      info.get("version"),
+                                      " (classic saved objects: Kibana < 9.4 has no Dashboards API)"
+                                      if product == "kibana" and info["backend"] == "osd" else ""))
+    if client.proxy_auth:
+        print("auth:      proxy basic auth (KIBANA_NGINX_*) + session login as KIBANA_USERNAME")
     print("app url:   {}".format(info["base"]))
     print("data:      {} ({})".format(info["data"] if info["data_mode"] == "direct" else "console proxy",
                                       info["data_mode"]))
@@ -2219,14 +2350,19 @@ def cmd_status(client, args):
         print("cluster:   {} {}".format(info.get("cluster_distribution"), info["cluster_version"]))
     if info["backend"] == "kibana":
         print("space:     {}".format(client.space or "default"))
-        if v < (9, 4, 0):
-            print("WARNING:   Kibana {} has no Dashboards API (needs 9.4+); only discover/query/list/get "
-                  "via saved objects work.".format(info.get("version")))
-        else:
+        if True:
             gates = ", ".join("{} {}".format(k, "on" if v >= g + (0,) else "off (needs {}.{})".format(*g))
                               for k, g in GATES.items())
             print("features:  {}".format(gates))
         print("queries:   ES|QL")
+    elif product == "kibana":
+        try:
+            me = client.app("GET", "/internal/security/me")
+            print("user:      {}  roles: {}".format(me.get("username"), ", ".join(me.get("roles") or [])))
+        except ApiError:
+            pass
+        print("space:     {}".format(client.space or "default"))
+        print("queries:   {}DSL".format("ES|QL, SQL, " if v >= (8, 11, 0) else "SQL, "))
     else:
         try:
             acct = client.data("GET", "/_plugins/_security/api/account") if info["data_mode"] == "direct" else {}
@@ -2297,7 +2433,7 @@ def cmd_get(client, args):
     else:
         b = fetch_osd_bundle(client, args.id, kind)
         if b is None:
-            raise ApiError("{} {!r} not found in tenant {!r}".format(kind, args.id, client.tenant or "default"), 404)
+            raise ApiError("{} {!r} not found in {}".format(kind, args.id, client.scope()), 404)
         if args.output:
             dump_json(b, args.output)
             note("saved decoded bundle ({} visualizations) to {} -- edit and `apply` it".format(
@@ -2472,8 +2608,10 @@ def cmd_query(client, args):
     q = args.query if args.query != "-" else sys.stdin.read()
     lang = args.lang
     if lang == "auto":
-        if client.backend == "kibana":
+        if client.backend == "kibana" or (client.product == "kibana" and client.version >= (8, 11, 0)):
             lang = "esql"
+        elif client.product == "kibana":
+            lang = "sql"
         else:
             lang = "sql" if re.match(r"(?i)^\s*(select|show|describe)\b", q) else "ppl"
     tr = since_to_range(args.since)
@@ -2481,6 +2619,10 @@ def cmd_query(client, args):
         res = client.data("POST", "/_query?format=json", {"query": esql_substitute(q, tr)})
         cols = [c["name"] for c in res.get("columns") or []]
         rows = res.get("values") or []
+    elif lang == "sql" and client.product == "kibana":
+        res = client.data("POST", "/_sql?format=json", {"query": q})
+        cols = [c["name"] for c in res.get("columns") or []]
+        rows = res.get("rows") or []
     elif lang in ("ppl", "sql"):
         res = client.data("POST", "/_plugins/_{}".format(lang), {"query": q})
         cols = [c.get("alias") or c["name"] for c in res.get("schema") or []]
@@ -2669,7 +2811,8 @@ def validate_osd_bundle(client, bundle, time_range=None, out=print):
                     if r.get("name") == "kibanaSavedObjectMeta.searchSourceJSON.index"), None)
         ip = ips.get(ref)
         if not ip:
-            lines.append(("error", name, "index pattern {} not found in this tenant".format(ref)))
+            lines.append(("error", name, "index pattern {} not found in this {} (deleted?)".format(
+                ref, "space" if client.product == "kibana" else "tenant")))
             continue
         tf = ip.get("timeFieldName")
         must = [{"range": {tf: {"gte": tr["from"], "lte": tr.get("to", "now")}}}] if tf else []
@@ -2763,7 +2906,7 @@ def cmd_validate(client, args):
             raise UsageError("validate --id is for OpenSearch dashboards; on Kibana use `get -o` then validate the body")
         b = fetch_osd_bundle(client, args.id)
         if b is None:
-            raise ApiError("dashboard {!r} not found in tenant {!r}".format(args.id, client.tenant or "default"), 404)
+            raise ApiError("dashboard {!r} not found in {}".format(args.id, client.scope()), 404)
         w, e = validate_osd_bundle(client, b, since_to_range(args.since) if args.since else None)
         print("validate: {} error(s), {} warning(s)".format(e, w))
         return 1 if e else 0
@@ -2875,9 +3018,19 @@ def osd_check_patterns(client, bundle, repair, created, plan=None):
     warnings = []
     for o in got.get("saved_objects") or []:
         if o.get("error"):
-            warnings.append("index pattern {} is not visible in this tenant -- its panels will error".format(o["id"]))
+            warnings.append("index pattern {} is not visible in this {} -- its panels will error".format(
+                o["id"], client.scope()))
             continue
         a = o["attributes"]
+        if client.product == "kibana":
+            # Kibana 7.11+ stores an empty field list and loads fields at runtime: check the live
+            # mapping, never rewrite the pattern.
+            names = {f.get("name") for f in osd_pattern_fields(client, a["title"])}
+            missing = sorted(used[o["id"]] - names)
+            if missing:
+                warnings.append("index {} has no field(s) {} -- those panels will error".format(
+                    a.get("title"), ", ".join(missing)))
+            continue
         try:
             fields = json.loads(a.get("fields") or "[]")
         except ValueError:
@@ -2916,9 +3069,10 @@ def _resolve_osd_placeholders(client, bundle, ctx, created):
             require_writes("create index pattern {!r}".format(pat))
             fields = ctx.f(pat) if ctx else Fields()
             tf = guess_time_field(fields)
-            j = client.app("POST", "/api/saved_objects/index-pattern",
-                           {"attributes": {"title": pat, "timeFieldName": tf,
-                                           "fields": json.dumps(osd_pattern_fields(client, pat), ensure_ascii=False)}})
+            attrs = {"title": pat, "timeFieldName": tf}
+            if client.product != "kibana":  # Kibana loads fields at runtime; OSD needs the cached list
+                attrs["fields"] = json.dumps(osd_pattern_fields(client, pat), ensure_ascii=False)
+            j = client.app("POST", "/api/saved_objects/index-pattern", {"attributes": attrs})
             iid = j["id"]
             created.append("index pattern {} [{}] time={}".format(pat, iid, tf))
         text = text.replace("{{index_pattern:%s}}" % pat, iid)
@@ -3033,11 +3187,10 @@ def _apply_osd(client, bundle, ctx, args):
     prev_vis = {v["id"] for v in (current or {}).get("visualizations") or [] if not v.get("missing")}
     new_vis = {v["id"] for v in objs}
     orphans = sorted(v for v in prev_vis - new_vis if v.startswith(oid + "--"))
-    tenant = {"__user__": "private"}.get(client.tenant, client.tenant) or "default"
     print("== plan")
-    print("{} {} {!r} [{}] with {} visualization(s) in tenant {}".format(
+    print("{} {} {!r} [{}] with {} visualization(s) in {}".format(
         "update" if current else "create", kind, (dash or objs[0])["attributes"].get("title"), oid,
-        len(objs) if dash else 0, tenant))
+        len(objs) if dash else 0, client.scope()))
     if orphans:
         print("remove {} orphaned panel visualization(s) from the previous version: {}".format(
             len(orphans), ", ".join(orphans)))
